@@ -94,10 +94,18 @@ jobs:
           # STARTED, which for the sync workflow is the commit before its
           # rebase. Publishing that would ship a tree nobody tested.
           ref: ${{ inputs.sha || github.sha }}
-          # The version is derived from the nearest upstream tag.
+          # Full history so the tags fetched below can be described from HEAD.
           fetch-depth: 0
-          fetch-tags: true
           persist-credentials: false
+
+      # The version is derived from the nearest upstream tag, and those tags
+      # are fetched straight from upstream rather than mirrored onto this fork.
+      # Pushing them here would arm upstream's own release.yml, which this fork
+      # inherits and which triggers on `push: tags: ["*"]`: every upstream
+      # release would kick off their goreleaser, cargo and PyPI pipeline on our
+      # repository. Fetching keeps the tags out of origin entirely.
+      - name: Fetch upstream tags
+        run: git fetch --tags --quiet https://github.com/sst/sst.git
 
       - uses: actions/setup-go@v5
         with:
