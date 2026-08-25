@@ -168,7 +168,21 @@ fi
 # build -- with the caveat that it makes `latest` mean "last published" rather
 # than "highest version".
 for dir in "${platform_packages[@]}" "$wrapper"; do
-  echo "fork-publish: publishing $(jq -r .name "$dir/package.json")"
+  name=$(jq -r .name "$dir/package.json")
+
+  # Skip what is already there at this exact version, rather than failing on
+  # it. npm versions are immutable and immutability is PER PACKAGE, so a run
+  # that dies partway leaves some published and some not: without this, every
+  # later run recomputes the same version, hits 403 on the first one that
+  # already exists, and the release can never complete without a human picking
+  # a version by hand. The version is derived from the commit, so a package
+  # already published at it was built from this same tree.
+  if npm view "$name@$version" version >/dev/null 2>&1; then
+    echo "fork-publish: $name@$version already published, skipping"
+    continue
+  fi
+
+  echo "fork-publish: publishing $name"
   (cd "$dir" && npm publish --access public --tag latest)
 done
 
