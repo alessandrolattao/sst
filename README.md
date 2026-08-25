@@ -91,7 +91,7 @@ apply unchanged.
 
 ## Relationship with upstream
 
-This fork tracks [`sst/sst`](https://github.com/sst/sst) via [`anomalyco/sst`](https://github.com/anomalyco/sst) and is kept in sync with it. Branches:
+This fork tracks [`sst/sst`](https://github.com/sst/sst) and is kept in sync with it automatically: a daily job rebases the patches onto each new upstream release, verifies the result builds and passes, and publishes a matching build. When a rebase conflicts it stops and opens an issue instead of publishing something nobody read. Branches:
 
 - `dev` — a plain mirror of upstream, never committed to directly
 - `feat/…` — one branch per change, rebased on `dev`, each self-contained enough to be sent upstream
