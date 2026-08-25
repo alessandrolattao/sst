@@ -1,0 +1,133 @@
+name: Fork Publish
+
+# Builds this fork and publishes it to npm under the @alessandrolattao scope.
+#
+# Callable on its own (to ship a change of ours) or from the upstream sync
+# workflow, which calls it after rebasing onto a new SST release.
+#
+# Authentication is npm's trusted publishing (OIDC): no NPM_TOKEN, nothing to
+# rotate, no 2FA prompt for CI to satisfy. Two things about how npm validates
+# it are easy to get wrong:
+#
+#   - For a reusable workflow, npm checks the CALLING workflow's filename, not
+#     the one containing `npm publish`. So both this file and
+#     fork-sync-upstream.yml must be registered as trusted publishers on all
+#     three packages, or the scheduled release is rejected.
+#   - A trusted publisher pins the repository and the workflow filename, but
+#     NOT the branch. Without the environment below, anyone who can push a
+#     branch could keep this path intact, rewrite scripts/fork-publish.sh, and
+#     dispatch a publish from it. The `npm-publish` environment is where that
+#     gets constrained: give it a deployment branch rule for `alessandrolattao`
+#     and, if you want a human in the loop, a required reviewer.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact version to publish (leave empty to bump the counter)"
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        required: false
+        type: string
+      sha:
+        description: "Commit to build and publish"
+        required: true
+        type: string
+    outputs:
+      version:
+        description: "The version that was published"
+        value: ${{ jobs.publish.outputs.version }}
+
+# Nothing at workflow level: each job asks for exactly what it needs, so the
+# job holding the npm credential is not also the one running upstream's tests.
+permissions: {}
+
+jobs:
+  verify:
+    name: Build and test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test what the fork changes
+        run: go test -race ./pkg/runtime/... ./cmd/sst/mosaic/aws/...
+
+  publish:
+    name: Publish to npm
+    needs: verify
+    runs-on: ubuntu-latest
+    # Registered on npm alongside the repository, and given a deployment branch
+    # rule on GitHub. This is the only place the publishing branch can be
+    # constrained: npm's own check cannot express it.
+    environment: npm-publish
+    permissions:
+      # Required for OIDC: it is what lets the runner mint a token npm trusts.
+      # It is job-scoped, so every step here can mint it. That is why this job
+      # runs as little as possible and the tests live in `verify` above.
+      id-token: write
+      contents: read
+    outputs:
+      version: ${{ steps.publish.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Explicit: a reusable workflow inherits the caller's context, so
+          # `github.sha` here would be the branch head as it was when the run
+          # STARTED, which for the sync workflow is the commit before its
+          # rebase. Publishing that would ship a tree nobody tested.
+          ref: ${{ inputs.sha || github.sha }}
+          # The version is derived from the nearest upstream tag.
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned, not `latest`: this step runs in the job that can publish.
+          bun-version: "1.2.21"
+
+      - uses: actions/setup-node@v4
+        with:
+          # Trusted publishing needs Node >= 22.14 and npm >= 11.5.1.
+          node-version: "22.14"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Pin npm to a version that supports trusted publishing
+        run: |
+          npm install -g npm@11.5.1
+          npm --version
+
+      # platform/scripts/build drives a multi-arch buildx build, which needs
+      # both of these. Without them it fails, and because that script has no
+      # `set -e`, it fails without stopping the release.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - run: bun install --frozen-lockfile
+
+      - name: Publish
+        id: publish
+        # Via env, never interpolated into the command: a workflow input reaches
+        # the shell verbatim otherwise, and a value carrying shell metacharacters
+        # would run as code here. The script validates it as semver before it
+        # reaches the Go linker, where a space would inject linker flags.
+        env:
+          VERSION: ${{ inputs.version }}
+        run: bash scripts/fork-publish.sh "$VERSION"
