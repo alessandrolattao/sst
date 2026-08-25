@@ -1,13 +1,18 @@
 package golang
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
+	"golang.org/x/sync/semaphore"
+
 	"github.com/sst/sst/v3/pkg/flag"
+	"github.com/sst/sst/v3/pkg/runtime"
 )
 
 func absPath(parts ...string) string {
@@ -410,5 +415,55 @@ func TestNew_BuildConcurrency(t *testing.T) {
 				t.Fatalf("acquired more than the %d permitted builds", tt.want)
 			}
 		})
+	}
+}
+
+// A build that fails must hand its slot back, otherwise a handful of broken
+// handlers permanently shrink the pool and eventually wedge every later build.
+// FindUp returns an error well before anything expensive happens, so this
+// exercises the error path without needing a toolchain.
+func TestBuild_ReleasesSlotOnFailure(t *testing.T) {
+	t.Parallel()
+
+	r := &Runtime{
+		concurrency: semaphore.NewWeighted(1),
+		files:       map[string]map[string]struct{}{},
+		pkgDirs:     map[string]map[string]struct{}{},
+		gomodPaths:  map[string]string{},
+	}
+
+	// A directory with no go.mod anywhere above it.
+	dir := t.TempDir()
+	input := &runtime.BuildInput{FunctionID: "fn", Handler: dir}
+
+	for i := range 3 {
+		if _, err := r.Build(t.Context(), input); err == nil {
+			t.Fatalf("build %d: expected failure for a handler with no go.mod", i+1)
+		}
+	}
+
+	if !r.concurrency.TryAcquire(1) {
+		t.Fatal("the single build slot was never released")
+	}
+}
+
+// Acquire is the one place where this runtime deliberately differs from node
+// and python: it propagates the context error instead of ignoring it, so a
+// cancelled dev loop stops queueing builds instead of running them all.
+func TestBuild_HonoursCancelledContext(t *testing.T) {
+	t.Parallel()
+
+	r := &Runtime{
+		concurrency: semaphore.NewWeighted(1),
+		files:       map[string]map[string]struct{}{},
+		pkgDirs:     map[string]map[string]struct{}{},
+		gomodPaths:  map[string]string{},
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if _, err := r.Build(ctx, &runtime.BuildInput{FunctionID: "fn", Handler: t.TempDir()}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v, want context.Canceled", err)
 	}
 }
