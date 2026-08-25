@@ -14,10 +14,10 @@ if (!resolved) {
     resolved = require.resolve(path.join(name, "bin", binary));
   } catch (ex) {
     console.error(
-      `This fork of SST only publishes Linux builds (x64 and arm64), and there is no "${name}" package to install.\n\n` +
-        `To run it on another platform, build the CLI from https://github.com/alessandrolattao/sst and point SST_BIN_PATH at the binary:\n` +
+      `No "${name}" package: this fork builds for Linux (x64, arm64) and macOS (arm64, x64).\n\n` +
+        `On any other platform, build the CLI from https://github.com/alessandrolattao/sst and point SST_BIN_PATH at it:\n` +
         `  go build -o /tmp/sst ./cmd/sst && SST_BIN_PATH=/tmp/sst npx sst <command>\n\n` +
-        `For everything except the Go build changes, upstream's "sst" package works the same and covers every platform.`,
+        `Upstream's "sst" package covers every platform and behaves the same, minus the Go build changes.`,
     );
     process.exit(1);
   }

@@ -57,7 +57,7 @@ npm install @alessandrolattao/sst
 # bun add @alessandrolattao/sst
 ```
 
-The binary is still called `sst`, so `bunx sst`, `npx sst` and every existing script keep working unchanged.
+Built for Linux (x64 and arm64) and macOS (Apple silicon and Intel). The binary is still called `sst`, so `bunx sst`, `npx sst` and every existing script keep working unchanged.
 
 Versions are published as pre-releases (`4.17.1-alessandrolattao.1`), which means they must be pinned explicitly and will never be picked up by a `^4` range by accident. If your `sst.config.ts` declares a `version` constraint, it needs a pre-release floor to accept one, since SST checks it with Masterminds/semver where a plain `>=` never matches a pre-release:
 
