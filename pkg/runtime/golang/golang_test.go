@@ -387,7 +387,7 @@ func TestNew_BuildConcurrency(t *testing.T) {
 		{"function specific wins over generic", "8", "2", 8},
 		{"falls back to the generic flag", "", "3", 3},
 		{"zero degrades to serial", "0", "", 1},
-		{"garbage degrades to serial", "not-a-number", "", 1},
+		{"garbage keeps the default", "not-a-number", "", 4},
 	}
 
 	origFunction := flag.SST_BUILD_CONCURRENCY_FUNCTION

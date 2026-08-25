@@ -79,15 +79,29 @@ func (w *Worker) Logs() io.ReadCloser {
 }
 
 // New returns a Runtime with empty per-function state.
-func New() *Runtime {
-	weight := int64(4)
-	if flag.SST_BUILD_CONCURRENCY_FUNCTION != "" {
-		weight, _ = strconv.ParseInt(flag.SST_BUILD_CONCURRENCY_FUNCTION, 10, 64)
-	} else if flag.SST_BUILD_CONCURRENCY != "" {
-		weight, _ = strconv.ParseInt(flag.SST_BUILD_CONCURRENCY, 10, 64)
+// parseConcurrency reads a build concurrency limit, falling back to the default
+// when the value is unusable. A zero or negative limit is floored to 1 rather
+// than handed to semaphore.NewWeighted, where it would block the first Acquire
+// forever; a value that does not parse keeps the default, since silently
+// serializing every build over a typo is its own kind of failure.
+func parseConcurrency(name string, raw string, fallback int64) int64 {
+	weight, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		slog.Warn("ignoring unparsable build concurrency", "var", name, "value", raw, "using", fallback)
+		return fallback
 	}
 	if weight < 1 {
-		weight = 1
+		return 1
+	}
+	return weight
+}
+
+func New() *Runtime {
+	weight := int64(4)
+	if raw := flag.SST_BUILD_CONCURRENCY_FUNCTION; raw != "" {
+		weight = parseConcurrency("SST_BUILD_CONCURRENCY_FUNCTION", raw, weight)
+	} else if raw := flag.SST_BUILD_CONCURRENCY; raw != "" {
+		weight = parseConcurrency("SST_BUILD_CONCURRENCY", raw, weight)
 	}
 
 	return &Runtime{
@@ -162,19 +176,30 @@ func (r *Runtime) Build(ctx context.Context, input *runtime.BuildInput) (*runtim
 
 	absRoot, _ := filepath.Abs(root)
 	absGomod, _ := filepath.Abs(gomod)
-	deps, depErr := r.captureDeps(ctx, absRoot, src, env)
 
-	r.mut.Lock()
-	r.gomodPaths[input.FunctionID] = absGomod
-	// On capture failure keep the previous graph (if any): the next file
-	// edit on a still-tracked file should still rebuild correctly. A
-	// successful build below replaces it; until then we degrade
-	// gracefully rather than disabling rebuild detection entirely.
-	if depErr == nil {
-		r.files[input.FunctionID] = deps.files
-		r.pkgDirs[input.FunctionID] = deps.pkgDirs
+	// The import graph exists only to answer ShouldRebuild, and the only
+	// callers of that are the dev file watchers. A deploy build is one-shot,
+	// so capturing the graph there runs `go list -deps` -- which costs about
+	// as much as the build itself -- for a result nobody ever reads.
+	var (
+		deps   capturedDeps
+		depErr error
+	)
+	if input.Dev {
+		deps, depErr = r.captureDeps(ctx, absRoot, src, env)
+
+		r.mut.Lock()
+		r.gomodPaths[input.FunctionID] = absGomod
+		// On capture failure keep the previous graph (if any): the next file
+		// edit on a still-tracked file should still rebuild correctly. A
+		// successful build below replaces it; until then we degrade
+		// gracefully rather than disabling rebuild detection entirely.
+		if depErr == nil {
+			r.files[input.FunctionID] = deps.files
+			r.pkgDirs[input.FunctionID] = deps.pkgDirs
+		}
+		r.mut.Unlock()
 	}
-	r.mut.Unlock()
 
 	if depErr != nil {
 		slog.Warn("failed to capture go deps; keeping previous graph for rebuild detection",
