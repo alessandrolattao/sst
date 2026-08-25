@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/sst/sst/v3/pkg/flag"
 )
 
 func absPath(parts ...string) string {
@@ -364,4 +366,49 @@ func TestParseGoListOutput_FiltersStdlibAndGOMODCACHE(t *testing.T) {
 func jsonStr(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+// The build concurrency limit is read once at construction, so these
+// cases drive it through the package-level flag vars rather than the
+// environment (which is already captured by the time tests run).
+func TestNew_BuildConcurrency(t *testing.T) {
+	tests := []struct {
+		name     string
+		function string
+		generic  string
+		want     int64
+	}{
+		{"defaults to four", "", "", 4},
+		{"function specific wins over generic", "8", "2", 8},
+		{"falls back to the generic flag", "", "3", 3},
+		{"zero degrades to serial", "0", "", 1},
+		{"garbage degrades to serial", "not-a-number", "", 1},
+	}
+
+	origFunction := flag.SST_BUILD_CONCURRENCY_FUNCTION
+	origGeneric := flag.SST_BUILD_CONCURRENCY
+	t.Cleanup(func() {
+		flag.SST_BUILD_CONCURRENCY_FUNCTION = origFunction
+		flag.SST_BUILD_CONCURRENCY = origGeneric
+	})
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			flag.SST_BUILD_CONCURRENCY_FUNCTION = tt.function
+			flag.SST_BUILD_CONCURRENCY = tt.generic
+
+			r := New()
+
+			// The semaphore does not expose its capacity, so probe it:
+			// exactly `want` slots must be available, and no more.
+			for i := int64(0); i < tt.want; i++ {
+				if !r.concurrency.TryAcquire(1) {
+					t.Fatalf("slot %d of %d unavailable", i+1, tt.want)
+				}
+			}
+			if r.concurrency.TryAcquire(1) {
+				t.Fatalf("acquired more than the %d permitted builds", tt.want)
+			}
+		})
+	}
 }

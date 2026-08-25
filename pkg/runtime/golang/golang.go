@@ -8,10 +8,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
+	"golang.org/x/sync/semaphore"
+
 	"github.com/sst/sst/v3/internal/fs"
+	"github.com/sst/sst/v3/pkg/flag"
 	"github.com/sst/sst/v3/pkg/process"
 	"github.com/sst/sst/v3/pkg/runtime"
 )
@@ -21,6 +25,11 @@ import (
 // import graph so [Runtime.ShouldRebuild] only fires for files that
 // actually compile into the handler's binary.
 type Runtime struct {
+	// concurrency caps how many `go build` processes run at once. Each
+	// build is an external process that itself uses every core it can, so
+	// an unbounded fan-out over a few hundred handlers would thrash a CI
+	// runner's CPU and memory. Mirrors the node and python runtimes.
+	concurrency        *semaphore.Weighted
 	mut                sync.RWMutex
 	files              map[string]map[string]struct{}
 	pkgDirs            map[string]map[string]struct{}
@@ -71,10 +80,21 @@ func (w *Worker) Logs() io.ReadCloser {
 
 // New returns a Runtime with empty per-function state.
 func New() *Runtime {
+	weight := int64(4)
+	if flag.SST_BUILD_CONCURRENCY_FUNCTION != "" {
+		weight, _ = strconv.ParseInt(flag.SST_BUILD_CONCURRENCY_FUNCTION, 10, 64)
+	} else if flag.SST_BUILD_CONCURRENCY != "" {
+		weight, _ = strconv.ParseInt(flag.SST_BUILD_CONCURRENCY, 10, 64)
+	}
+	if weight < 1 {
+		weight = 1
+	}
+
 	return &Runtime{
-		files:      map[string]map[string]struct{}{},
-		pkgDirs:    map[string]map[string]struct{}{},
-		gomodPaths: map[string]string{},
+		concurrency: semaphore.NewWeighted(weight),
+		files:       map[string]map[string]struct{}{},
+		pkgDirs:     map[string]map[string]struct{}{},
+		gomodPaths:  map[string]string{},
 	}
 }
 
@@ -103,6 +123,11 @@ func goarchFromArchitecture(arch string) string {
 // is logged and disables ShouldRebuild for that function until the
 // next successful build.
 func (r *Runtime) Build(ctx context.Context, input *runtime.BuildInput) (*runtime.BuildOutput, error) {
+	if err := r.concurrency.Acquire(ctx, 1); err != nil {
+		return nil, err
+	}
+	defer r.concurrency.Release(1)
+
 	var properties Properties
 	json.Unmarshal(input.Properties, &properties)
 
