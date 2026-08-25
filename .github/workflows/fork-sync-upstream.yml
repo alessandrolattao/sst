@@ -183,12 +183,11 @@ jobs:
           # for this step and not while upstream's code was running.
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
-          # Tags go first and unconditionally, because the publish job derives
-          # its version from the nearest one and origin starts with none. Gating
-          # this on a rebase would leave the very first run, which has nothing
-          # to rebase, unable to name its own base.
-          git push origin --tags
-
+          # Deliberately no `git push origin --tags`. The publish job fetches
+          # upstream's tags directly, and mirroring them here would arm
+          # release.yml, inherited from upstream and triggered by
+          # `push: tags: ["*"]`, turning every upstream release into a run of
+          # THEIR release pipeline on this fork.
           if [ "$REBASED" = "true" ]; then
             git push origin dev
             git push origin "refs/heads/backup/*"
