@@ -200,13 +200,11 @@ func function(ctx context.Context, input input) {
 	builds := map[string]*runtime.BuildOutput{}
 	targets := map[string]*runtime.BuildInput{}
 
-	getBuildOutput := func(functionID string) *runtime.BuildOutput {
-		build := builds[functionID]
-		if build != nil {
-			return build
-		}
-		target, _ := targets[functionID]
-		build, err := input.project.Runtime.Build(ctx, target)
+	// recordBuild publishes the build event and updates the cache. It is the
+	// bookkeeping half of getBuildOutput, split out so the parallel rebuild
+	// below can do the compiling concurrently and still apply the results
+	// serially, on the event loop goroutine that owns `builds`.
+	recordBuild := func(functionID string, build *runtime.BuildOutput, err error) *runtime.BuildOutput {
 		if err == nil {
 			bus.Publish(&FunctionBuildEvent{
 				FunctionID: functionID,
@@ -224,6 +222,62 @@ func function(ctx context.Context, input input) {
 		}
 		builds[functionID] = build
 		return build
+	}
+
+	getBuildOutput := func(functionID string) *runtime.BuildOutput {
+		build := builds[functionID]
+		if build != nil {
+			return build
+		}
+		target := targets[functionID]
+		build, err := input.project.Runtime.Build(ctx, target)
+		return recordBuild(functionID, build, err)
+	}
+
+	// rebuildAll compiles the given handlers concurrently. A single save can
+	// invalidate every handler that imports the changed package, and rebuilding
+	// those in sequence puts the whole dev loop behind a queue of compiles.
+	//
+	// Only the compiling leaves this goroutine. Results come back over a
+	// channel and are applied here, so `builds` and `toBuild` stay owned by the
+	// event loop. Handlers that fail to build are dropped from the set, so the
+	// caller only restarts workers whose code is actually runnable.
+	//
+	// There is no limit on the fan-out at this layer: throttling belongs to the
+	// runtimes, which know what a build of theirs costs. Adding a second limit
+	// here would just park goroutines without changing the effective ceiling.
+	rebuildAll := func(toBuild map[string]bool) {
+		type rebuilt struct {
+			functionID string
+			output     *runtime.BuildOutput
+			err        error
+		}
+
+		done := make(chan rebuilt, len(toBuild))
+		pending := 0
+		for functionID := range toBuild {
+			// Defensive: toBuild is built from handlers that already resolved a
+			// target, so a miss here would mean the two maps drifted apart.
+			// Without the check a nil target reaches Build and panics.
+			target, ok := targets[functionID]
+			if !ok {
+				delete(toBuild, functionID)
+				continue
+			}
+
+			pending++
+			go func() {
+				output, err := input.project.Runtime.Build(ctx, target)
+				done <- rebuilt{functionID: functionID, output: output, err: err}
+			}()
+		}
+
+		for range pending {
+			result := <-done
+			if recordBuild(result.functionID, result.output, result.err) == nil {
+				delete(toBuild, result.functionID)
+			}
+		}
 	}
 
 	startWorker := func(functionID string, workerID string) bool {
@@ -423,12 +477,7 @@ func function(ctx context.Context, input input) {
 					}
 				}
 
-				for functionID := range toBuild {
-					output := getBuildOutput(functionID)
-					if output == nil {
-						delete(toBuild, functionID)
-					}
-				}
+				rebuildAll(toBuild)
 
 				for workerID, info := range workers {
 					if toBuild[info.FunctionID] {
