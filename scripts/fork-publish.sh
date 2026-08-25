@@ -153,9 +153,15 @@ fi
 
 # Platforms first: the wrapper depends on them, so publishing it first would
 # leave a window where installing it resolves nothing.
+#
+# --tag is required, not decorative: npm refuses to publish a pre-release
+# without one, and every version here is a pre-release. `latest` is the right
+# tag for this fork -- `npm i @alessandrolattao/sst` should get the newest
+# build -- with the caveat that it makes `latest` mean "last published" rather
+# than "highest version".
 for dir in "${platform_packages[@]}" "$wrapper"; do
   echo "fork-publish: publishing $(jq -r .name "$dir/package.json")"
-  (cd "$dir" && npm publish --access public)
+  (cd "$dir" && npm publish --access public --tag latest)
 done
 
 echo "fork-publish: published $version"
