@@ -1,89 +1,128 @@
-<p align="center">
-  <a href="https://sst.dev/">
-    <img alt="SST" src="https://raw.githubusercontent.com/sst/identity/main/variants/sst-full.svg" width="300" />
-  </a>
-</p>
+<pre>
+ █████╗ ██╗     ███████╗███████╗███████╗ █████╗ ███╗   ██╗██████╗ ██████╗  ██████╗ ██╗      █████╗ ████████╗████████╗ █████╗  ██████╗ 
+██╔══██╗██║     ██╔════╝██╔════╝██╔════╝██╔══██╗████╗  ██║██╔══██╗██╔══██╗██╔═══██╗██║     ██╔══██╗╚══██╔══╝╚══██╔══╝██╔══██╗██╔═══██╗
+███████║██║     █████╗  ███████╗███████╗███████║██╔██╗ ██║██║  ██║██████╔╝██║   ██║██║     ███████║   ██║      ██║   ███████║██║   ██║
+██╔══██║██║     ██╔══╝  ╚════██║╚════██║██╔══██║██║╚██╗██║██║  ██║██╔══██╗██║   ██║██║     ██╔══██║   ██║      ██║   ██╔══██║██║   ██║
+██║  ██║███████╗███████╗███████║███████║██║  ██║██║ ╚████║██████╔╝██║  ██║╚██████╔╝███████╗██║  ██║   ██║      ██║   ██║  ██║╚██████╔╝
+╚═╝  ╚═╝╚══════╝╚══════╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝   ╚═╝      ╚═╝   ╚═╝  ╚═╝ ╚═════╝ 
+</pre>
 
 <p align="center">
-  <a href="https://sst.dev/discord"><img alt="Discord" src="https://img.shields.io/discord/983865673656705025?style=flat-square&label=Discord" /></a>
-  <a href="https://www.npmjs.com/package/sst"><img alt="npm" src="https://img.shields.io/npm/v/sst.svg?style=flat-square" /></a>
-  <a href="https://github.com/anomalyco/sst/actions/workflows/build.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/anomalyco/sst/build.yml?style=flat-square&branch=dev" /></a>
+  <a href="https://www.npmjs.com/package/@alessandrolattao/sst"><img alt="npm" src="https://img.shields.io/npm/v/@alessandrolattao/sst.svg?style=flat-square" /></a>
+  <a href="https://github.com/alessandrolattao/sst"><img alt="fork of sst/sst" src="https://img.shields.io/badge/fork%20of-sst%2Fsst-blue?style=flat-square" /></a>
+  <a href="./LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-green?style=flat-square" /></a>
 </p>
 
 ---
 
-Build full-stack apps on your own infrastructure.
+A personal fork of [SST](https://github.com/sst/sst) that makes Go projects build faster and behave properly in dev mode.
+
+Everything SST does, it still does. The changes live entirely in the Go runtime and in the dev rebuild loop, and they matter most on a monorepo with many handlers: this fork was built against one with **438 Go Lambda functions**.
+
+## What is different
+
+- **Go builds run in parallel.** The Go runtime held an exclusive lock around the whole build, so it compiled one function at a time no matter how many cores were available. The lock now guards only its own bookkeeping.
+
+- **`SST_BUILD_CONCURRENCY_FUNCTION` works for Go.** The documented knob was implemented for Node and Python only, and silently ignored for Go handlers. It now caps Go builds too, at 4 by default.
+
+- **Rebuilds follow real imports.** In dev, SST decided what to rebuild from the directory a changed file sits in. It now uses the handler's actual import graph, so editing a shared package rebuilds every function that imports it, and nothing else.
+
+- **Invalidated handlers rebuild together.** Once rebuild scope follows imports, one save can invalidate hundreds of handlers. They used to be recompiled one after another; now they are compiled concurrently, under a limit.
+
+- **Deploys stop paying for dev-only work.** The import graph is only ever read by the dev file watcher, but it was captured after every build, roughly doubling the cost of every deploy build. It is now captured only in dev.
+
+- **Smaller fixes.** Resolving `GOMODCACHE` is cancellable instead of outliving a Ctrl-C, `go list` output is decoded through explicit JSON tags, and an unparsable concurrency value warns and keeps the default instead of quietly falling back to serial builds.
+
+## What it costs
+
+Measured on the 438-handler monorepo this was written for, on a no-op deploy where nothing changed:
+
+| | before | after |
+|---|---|---|
+| build concurrency | 1 (peak 2) | up to the configured limit |
+| per-handler build | ~1.4s, of which half was the dev-only graph capture | ~0.6s |
 
 ## Installation
 
-For JavaScript projects, install SST locally so the CLI version is tracked with your app. You can then run the CLI with the same package manager.
-
 ```bash
-npm install sst
-# pnpm add sst
-# bun add sst
-# yarn add sst
+npm install @alessandrolattao/sst
+# bun add @alessandrolattao/sst
 ```
 
-If you are not using JavaScript, you can install the CLI globally.
+The binary is still called `sst`, so `bunx sst`, `npx sst` and every existing script keep working unchanged.
 
-```bash
-curl -fsSL https://sst.dev/install | bash
+Versions are published as pre-releases (`4.17.1-alessandrolattao.1`), which means they must be pinned explicitly and will never be picked up by a `^4` range by accident. If your `sst.config.ts` declares a `version` constraint, it needs a pre-release floor to accept one, since SST checks it with Masterminds/semver where a plain `>=` never matches a pre-release:
+
+```ts
+version: ">= 4.13.1-0",
 ```
 
-To install a specific version.
+## Starting a new project
+
+`sst init` writes an `sst.config.ts` for whatever it finds in the current
+directory, so install the CLI first and let it generate the config:
 
 ```bash
-curl -fsSL https://sst.dev/install | VERSION=0.0.403 bash
+mkdir my-app && cd my-app
+npm init -y
+npm install @alessandrolattao/sst@4.17.1-alessandrolattao.1
+npx sst init
 ```
 
-To use a package manager, [check out our docs](https://sst.dev/docs/reference/cli/).
+Then open the generated `sst.config.ts` and add the pre-release floor to its
+`app()` return, otherwise the CLI refuses to run against its own config:
 
-#### Manually
+```ts
+export default $config({
+  app(input) {
+    return {
+      name: "my-app",
+      version: ">= 4.13.1-0",
+      home: "aws",
+    };
+  },
+  async run() {},
+});
+```
 
-Download the pre-compiled binaries from the [releases](https://github.com/sst/sst/releases/latest) page and copy to the desired location.
+From here everything is upstream SST: `npx sst deploy --stage dev`,
+`npx sst dev`, and the [getting started guides](https://sst.dev/docs/start/aws/api)
+apply unchanged.
 
-## Get Started
+## Relationship with upstream
 
-Get started with your favorite framework:
+This fork tracks [`sst/sst`](https://github.com/sst/sst) via [`anomalyco/sst`](https://github.com/anomalyco/sst) and is kept in sync with it. Branches:
 
-- [Next.js](https://sst.dev/docs/start/aws/nextjs)
-- [Remix](https://sst.dev/docs/start/aws/remix)
-- [Astro](https://sst.dev/docs/start/aws/astro)
-- [API](https://sst.dev/docs/start/aws/api)
+- `dev` — a plain mirror of upstream, never committed to directly
+- `feat/…` — one branch per change, rebased on `dev`, each self-contained enough to be sent upstream
+- `alessandrolattao` — what actually gets built and published: upstream plus the patches plus the fork's own naming
 
-## Learn More
+The published package is renamed so it can sit next to the real one without claiming its name. Everything else, including the `SST_BIN_PATH` escape hatch, behaves exactly as upstream.
 
-Learn more about some of the key concepts:
+## Upstream documentation
 
-- [Live](https://sst.dev/docs/live)
-- [Linking](https://sst.dev/docs/linking)
-- [Console](https://sst.dev/docs/console)
-- [Components](https://sst.dev/docs/components)
+The fork changes no behaviour you interact with, so upstream's docs apply as they are:
 
-## Contributing
+- [Docs](https://sst.dev/docs/)
+- [CLI reference](https://sst.dev/docs/reference/cli/)
+- [Components](https://sst.dev/docs/components/)
 
-Here's how you can contribute:
-
-- Help us improve our docs
-- Find a bug? Open an issue
-- Feature request? Submit a PR 
-
-## Running Locally
+## Running locally
 
 Run `bun run setup`. You need [Go](https://go.dev/) and [Bun](https://bun.sh/) installed.
-
-Now you can run the CLI locally on any of the `examples/` apps.
 
 ```bash
 cd examples/aws-api
 go run ../../cmd/sst <command>
 ```
 
-If you want to build the CLI binary, run `bun run build:cli`. This will create a `sst` binary that you can use.
+To try a build of this fork against a real project without publishing anything, point `SST_BIN_PATH` at it:
 
-For building the docs, run `bun run docs:generate` and `bun run docs:dev`.
+```bash
+go build -o /tmp/sst ./cmd/sst
+SST_BIN_PATH=/tmp/sst bunx sst deploy --stage dev
+```
 
----
+## License
 
-**Join our community** [Discord](https://sst.dev/discord) | [YouTube](https://www.youtube.com/c/sst-dev) | [X.com](https://x.com/SST_dev)
+MIT, same as upstream. See [LICENSE](./LICENSE), which keeps the original SST copyright.
