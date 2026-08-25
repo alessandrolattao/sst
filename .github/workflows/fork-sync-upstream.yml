@@ -172,23 +172,32 @@ jobs:
         # out explicitly rather than resolving a branch name later.
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Push the rebased branch, its backup and the upstream tags
-        if: steps.check.outputs.rebase == 'true'
+      - name: Push
+        if: steps.check.outputs.updated == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REBASED: ${{ steps.check.outputs.rebase }}
         run: |
           set -euo pipefail
           # Supplied here rather than persisted at checkout, so it exists only
           # for this step and not while upstream's code was running.
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git push origin dev
-          # The published version is derived from the nearest upstream tag, so
-          # without these the publish job cannot name its own base.
+
+          # Tags go first and unconditionally, because the publish job derives
+          # its version from the nearest one and origin starts with none. Gating
+          # this on a rebase would leave the very first run, which has nothing
+          # to rebase, unable to name its own base.
           git push origin --tags
-          git push origin "refs/heads/backup/*"
-          # Force is expected: a rebase rewrites these commits by definition.
-          # --force-with-lease so a push that raced with this one is not lost.
-          git push --force-with-lease origin alessandrolattao
+
+          if [ "$REBASED" = "true" ]; then
+            git push origin dev
+            git push origin "refs/heads/backup/*"
+            # Force is expected: a rebase rewrites these commits by definition.
+            # --force-with-lease so a push that raced with this one is not lost.
+            git push --force-with-lease origin alessandrolattao
+            # The patch branches ride along via --update-refs.
+            git push --force-with-lease origin "refs/heads/feat/*"
+          fi
 
   notify:
     name: Report a failed sync
