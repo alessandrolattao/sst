@@ -1,13 +1,13 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "sst",
+  "name": "@alessandrolattao/sst",
   "type": "module",
   "sideEffects": false,
   "version": "0.0.0",
   "main": "./dist/index.js",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/anomalyco/sst.git"
+    "url": "git+https://github.com/alessandrolattao/sst.git"
   },
   "license": "MIT",
   "exports": {
@@ -60,5 +60,6 @@
     "aws4fetch": "1.0.18",
     "jose": "5.2.3",
     "openid-client": "5.6.4"
-  }
+  },
+  "description": "SST CLI fork with a parallel Go build pipeline"
 }
