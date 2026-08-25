@@ -20,9 +20,17 @@
 set -euo pipefail
 
 SCOPE="@alessandrolattao"
-PKG="$SCOPE/sst"
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
+
+# Both the version and the `commit` field below describe HEAD, so a dirty tree
+# would publish an artifact built from something no commit contains while
+# claiming otherwise. CI is always clean; this is for the local path.
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "fork-publish: working tree is dirty, commit or stash before publishing" >&2
+  git status --short >&2
+  exit 1
+fi
 
 # Resolve the version to publish. Without an argument, take the highest one
 # already on npm and bump its trailing counter, so the pipeline is idempotent
@@ -49,17 +57,18 @@ if [ -z "$version" ]; then
     exit 1
   fi
 
-  latest=$(npm view "$PKG" version 2>/dev/null || echo "")
-  counter=1
-  if [ -n "$latest" ] && [ "${latest%-*}" = "$base" ]; then
-    previous="${latest##*.}"
-    if [[ "$previous" =~ ^[0-9]+$ ]]; then
-      counter=$((previous + 1))
-    fi
-  fi
+  # The counter is how many commits this fork carries on top of that tag, so
+  # the version is a function of the tree alone. Deriving it from the registry
+  # instead looked simpler and was not: `npm view` returns the `latest`
+  # dist-tag rather than the highest version, a network blip reads as "never
+  # published" and resets the counter onto a version that already exists, and
+  # two runs of the same commit produce two different versions. It also wedged
+  # permanently if the wrapper failed after the platform packages published,
+  # since immutability is per package but the counter was read from one of them.
+  counter=$(git rev-list --count "$(git describe --tags --abbrev=0)..HEAD")
 
   version="${base}-${SUFFIX_NAME:-alessandrolattao}.${counter}"
-  echo "fork-publish: upstream $base, latest published ${latest:-none}, publishing $version"
+  echo "fork-publish: upstream $base, $counter commits on top, publishing $version"
 fi
 
 # The platform assets (bridge binary, runtime shims, dockerfiles) are embedded
@@ -76,11 +85,18 @@ bash -e platform/scripts/build
 
 # --frozen-lockfile with no fallback: resolving fresh dependencies here would
 # put whatever the registry served at that moment into the published wrapper.
+# dist/ is cleared first: `tsc` overwrites what it emits but never removes the
+# output of sources that no longer exist, and that leftover would be copied
+# into the package.
 echo "fork-publish: building the JS SDK"
-(cd sdk/js && bun install --frozen-lockfile && bun run build)
+(cd sdk/js && rm -rf dist && bun install --frozen-lockfile && bun run build)
 
 staging="$(mktemp -d)"
 trap 'rm -rf "$staging"' EXIT
+
+# What every published package points back to. npm only fills in gitHead when
+# publishing from inside a git repo, and this publishes from a staging dir.
+commit=$(git rev-parse HEAD)
 
 # One package per platform: the binary plus a package.json whose os/cpu fields
 # are what let npm pick the right one and skip the others.
@@ -97,10 +113,12 @@ for target in "linux amd64 x64" "linux arm64 arm64"; do
 
   jq -n \
     --arg name "$SCOPE/$name" --arg version "$version" \
-    --arg os "$goos" --arg cpu "$cpu" \
-    '{name: $name, version: $version, license: "MIT",
+    --arg os "$goos" --arg cpu "$cpu" --arg commit "$commit" \
+    '{name: $name, version: $version, license: "MIT", commit: $commit,
       repository: {type: "git", url: "git+https://github.com/alessandrolattao/sst.git"},
       os: [$os], cpu: [$cpu]}' > "$dir/package.json"
+  # Declaring MIT without shipping its text is a claim with nothing behind it.
+  cp LICENSE "$dir/LICENSE"
 
   platform_packages+=("$dir")
 done
@@ -111,11 +129,11 @@ wrapper="$staging/sst"
 mkdir -p "$wrapper"
 cp -r sdk/js/bin sdk/js/dist "$wrapper/"
 cp README.md "$wrapper/README.md"
+cp LICENSE "$wrapper/LICENSE"
 # `commit` is what ties a published version back to a tree. Nothing else does:
 # npm only fills in gitHead when publishing from inside a git repo, and this
 # publishes from a staging directory. CI reads it back to tell whether the
 # current branch head has already been released.
-commit=$(git rev-parse HEAD)
 jq \
   --arg version "$version" --arg scope "$SCOPE" --arg commit "$commit" \
   '.version = $version
