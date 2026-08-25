@@ -183,7 +183,7 @@ func (r *Runtime) Build(ctx context.Context, input *runtime.BuildInput) (*runtim
 			"root", absRoot,
 			"src", src,
 			"goflags", os.Getenv("GOFLAGS"),
-			"gomodcache", r.resolveGoModCache(env),
+			"gomodcache", r.resolveGoModCache(ctx, env),
 		)
 	}
 
@@ -273,17 +273,19 @@ func (r *Runtime) captureDeps(ctx context.Context, root, src string, env []strin
 	if err != nil {
 		return capturedDeps{}, err
 	}
-	return parseGoListOutput(strings.NewReader(string(out)), r.resolveGoModCache(env))
+	return parseGoListOutput(strings.NewReader(string(out)), r.resolveGoModCache(ctx, env))
 }
 
 func parseGoListOutput(r io.Reader, gomodcache string) (capturedDeps, error) {
+	// Field names match `go list -json` output. Tagged explicitly so a rename
+	// here cannot silently stop matching what the go tool emits.
 	type pkgInfo struct {
-		Standard   bool
-		Goroot     bool
-		Dir        string
-		GoFiles    []string
-		CgoFiles   []string
-		EmbedFiles []string
+		Standard   bool     `json:"Standard"`
+		Goroot     bool     `json:"Goroot"`
+		Dir        string   `json:"Dir"`
+		GoFiles    []string `json:"GoFiles"`
+		CgoFiles   []string `json:"CgoFiles"`
+		EmbedFiles []string `json:"EmbedFiles"`
 	}
 
 	deps := capturedDeps{
@@ -316,7 +318,7 @@ func parseGoListOutput(r io.Reader, gomodcache string) (capturedDeps, error) {
 	return deps, nil
 }
 
-func (r *Runtime) resolveGoModCache(env []string) string {
+func (r *Runtime) resolveGoModCache(ctx context.Context, env []string) string {
 	if r.gomodcacheOverride != "" {
 		return r.gomodcacheOverride
 	}
@@ -325,7 +327,7 @@ func (r *Runtime) resolveGoModCache(env []string) string {
 	if r.gomodcacheResolved {
 		return r.gomodcache
 	}
-	cmd := exec.Command("go", "env", "GOMODCACHE")
+	cmd := exec.CommandContext(ctx, "go", "env", "GOMODCACHE")
 	cmd.Env = env
 	out, err := cmd.Output()
 	if err != nil {
