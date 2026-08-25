@@ -6,9 +6,11 @@
 # only needs the CLI, on the platforms we actually run it on, so it builds the
 # binaries directly and assembles the same three-package layout by hand:
 #
-#   @alessandrolattao/sst               wrapper + JS SDK, resolves the binary
-#   @alessandrolattao/sst-linux-x64     the binary for CI checks and laptops
-#   @alessandrolattao/sst-linux-arm64   the binary for the arm64 deploy runner
+#   @alessandrolattao/sst                wrapper + JS SDK, resolves the binary
+#   @alessandrolattao/sst-linux-x64      CI and Linux laptops
+#   @alessandrolattao/sst-linux-arm64    the arm64 runners
+#   @alessandrolattao/sst-darwin-arm64   Apple silicon
+#   @alessandrolattao/sst-darwin-x64     Intel Macs
 #
 # The wrapper declares the two as optionalDependencies, and npm installs
 # whichever matches the host's os/cpu.
@@ -101,7 +103,11 @@ commit=$(git rev-parse HEAD)
 # One package per platform: the binary plus a package.json whose os/cpu fields
 # are what let npm pick the right one and skip the others.
 declare -a platform_packages=()
-for target in "linux amd64 x64" "linux arm64 arm64"; do
+# Every platform someone might run the CLI on: the two Linux ones for CI and
+# Linux laptops, the two darwin ones because npm skips an optionalDependency
+# whose os/cpu does not match, so a Mac would install the wrapper, resolve
+# nothing, and fail on first use.
+for target in "linux amd64 x64" "linux arm64 arm64" "darwin arm64 arm64" "darwin amd64 x64"; do
   read -r goos goarch cpu <<<"$target"
   name="sst-${goos}-${cpu}"
   dir="$staging/$name"
@@ -141,6 +147,8 @@ jq \
    | .optionalDependencies = {
        ($scope + "/sst-linux-x64"): $version,
        ($scope + "/sst-linux-arm64"): $version,
+       ($scope + "/sst-darwin-arm64"): $version,
+       ($scope + "/sst-darwin-x64"): $version,
      }' sdk/js/package.json > "$wrapper/package.json"
 
 if [ "${DRY_RUN:-}" = "1" ]; then
