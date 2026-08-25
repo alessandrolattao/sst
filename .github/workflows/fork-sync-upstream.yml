@@ -40,7 +40,7 @@ jobs:
       upstream_tag: ${{ steps.check.outputs.upstream_tag }}
       sha: ${{ steps.resolved.outputs.sha }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -51,10 +51,18 @@ jobs:
           # end supplies it explicitly instead.
           persist-credentials: false
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.9"
+
+      # Needed by platform/scripts/build in the verification step below.
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
 
       - name: Configure git
         run: |
@@ -157,12 +165,21 @@ jobs:
         if: steps.check.outputs.updated == 'true'
         run: |
           set -euo pipefail
+          # platform/dist is //go:embed-ed into the CLI, so nothing compiles
+          # without it. Under `bash -e` because that script has none of its own.
+          bun install --frozen-lockfile
+          bash -e platform/scripts/build
           go build ./cmd/sst
+          # Scoped to what the patches touch, like the publish workflow: the
+          # wider `./...` drags in the python runtime's `uv`-dependent tests.
+          #
           # Note the asymmetry: pkg/runtime/golang carries real tests, while
           # cmd/sst/mosaic/aws has none at all, so the dev-loop patches are
           # guarded by compilation alone. A rebase that lands them textually
           # but leaves them covering the wrong thing passes this gate.
-          go test -race ./pkg/runtime/... ./cmd/sst/mosaic/aws/...
+          go test -race ./pkg/runtime/golang/... ./cmd/sst/mosaic/aws/...
+        env:
+          DOCKER_PUSH: false
 
       - name: Resolve the commit to publish
         id: resolved

@@ -22,6 +22,11 @@ func testIntegrationEnv(t *testing.T) []string {
 		"GOMODCACHE=" + filepath.Join(t.TempDir(), "modcache"),
 		"GOCACHE=" + filepath.Join(t.TempDir(), "gocache"),
 		"GOPROXY=off",
+		// The go command writes telemetry counters under $HOME asynchronously,
+		// and t.TempDir removes that directory as soon as the test ends: the
+		// two race, and the cleanup fails with "directory not empty". Nothing
+		// here wants telemetry anyway.
+		"GOTELEMETRY=off",
 		"GOFLAGS=-mod=mod",
 		"GOTOOLCHAIN=local",
 		"GOWORK=off",
