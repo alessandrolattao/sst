@@ -44,6 +44,12 @@ on:
 # job holding the npm credential is not also the one running upstream's tests.
 permissions: {}
 
+# Two publishes at once would build the same version twice and race on npm,
+# where the loser gets a bare 403 on an immutable version.
+concurrency:
+  group: fork-publish
+  cancel-in-progress: false
+
 jobs:
   verify:
     name: Build and test
@@ -101,7 +107,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           # Pinned, not `latest`: this step runs in the job that can publish.
-          bun-version: "1.2.21"
+          # Must not be older than the bun that wrote bun.lock, or
+          # --frozen-lockfile fails on a lockfile format it cannot read.
+          bun-version: "1.3.9"
 
       - uses: actions/setup-node@v4
         with:
