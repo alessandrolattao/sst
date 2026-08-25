@@ -1,0 +1,250 @@
+name: Fork Sync Upstream
+
+# Watches upstream SST and, when it ships a new release, rebases this fork's
+# patches onto it and publishes a matching build.
+#
+# There is no way for upstream to notify us, so this polls. Daily is plenty:
+# the point is not to be fast, it is to not silently drift months behind.
+#
+# The rebase is the part that can genuinely fail. When it does, this stops and
+# opens an issue rather than publishing something nobody looked at: a conflict
+# means upstream changed code a patch depends on, which is exactly the case
+# that wants a human.
+#
+# Note what this workflow implies: upstream's code is fetched, rebased under,
+# built, tested and published to npm under the maintainer's scope, with no
+# human in between. The `npm-publish` environment in fork-publish.yml is where
+# a required reviewer belongs if that trade is not acceptable.
+on:
+  schedule:
+    # 05:00 UTC, after upstream's usual release hours.
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+# A manual dispatch landing on top of the scheduled run would rebase and
+# force-push twice, and race on the version counter.
+concurrency:
+  group: fork-sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Rebase onto upstream
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      updated: ${{ steps.check.outputs.updated }}
+      upstream_tag: ${{ steps.check.outputs.upstream_tag }}
+      sha: ${{ steps.resolved.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: alessandrolattao
+          # The token is NOT left in .git/config: the steps below run upstream's
+          # code (its build and its tests) on this runner, and that code should
+          # not find a repo-write credential sitting on disk. The push at the
+          # end supplies it explicitly instead.
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Check upstream for a new release
+        id: check
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/sst/sst.git
+          git fetch upstream dev --tags --quiet
+
+          local_base=$(git merge-base HEAD upstream/dev)
+          upstream_head=$(git rev-parse upstream/dev)
+          upstream_tag=$(git describe --tags --abbrev=0 upstream/dev | sed 's/^v//')
+          published=$(npm view "@alessandrolattao/sst" commit 2>/dev/null || echo "")
+
+          echo "upstream_tag=$upstream_tag" >> "$GITHUB_OUTPUT"
+
+          # Two separate questions. Rebasing is only needed when upstream moved,
+          # but publishing is needed whenever the branch head is not what is on
+          # npm -- which is the case after someone resolves a conflict by hand,
+          # or after a publish that failed on its own. Asking only the first
+          # question means those never ship.
+          if [ "$local_base" != "$upstream_head" ]; then
+            echo "upstream moved to $upstream_tag ($upstream_head)"
+            echo "rebase=true" >> "$GITHUB_OUTPUT"
+            echo "updated=true" >> "$GITHUB_OUTPUT"
+          elif [ "$published" != "$(git rev-parse HEAD)" ]; then
+            echo "on upstream $upstream_tag already, but HEAD ($(git rev-parse HEAD)) is not the published commit (${published:-none})"
+            echo "rebase=false" >> "$GITHUB_OUTPUT"
+            echo "updated=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "on upstream $upstream_tag and HEAD is published, nothing to do"
+            echo "rebase=false" >> "$GITHUB_OUTPUT"
+            echo "updated=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rebase the fork onto the new upstream
+        if: steps.check.outputs.rebase == 'true'
+        id: rebase
+        run: |
+          set -euo pipefail
+          git branch "backup/pre-sync-$(date -u +%Y%m%dT%H%M%SZ)" alessandrolattao
+          old_dev=$(git rev-parse dev)
+          old_head=$(git rev-parse alessandrolattao)
+
+          git checkout dev
+          git merge --ff-only upstream/dev
+
+          # The feat/* branches are stacked inside this history, one per patch,
+          # and they are what a PR to upstream would be cut from. Point them at
+          # their remote state first so --update-refs can carry them along:
+          # left behind, they would rot on an upstream that is months old while
+          # the published branch moves on.
+          for branch in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin/feat); do
+            git branch -f "${branch#origin/}" "$branch"
+          done
+
+          git checkout alessandrolattao
+          before=$(git rev-list --count dev..HEAD)
+          if ! git rebase --update-refs dev; then
+            # Collect the evidence before throwing it away: without this the
+            # issue can only say "something failed".
+            {
+              echo "### Conflicting files"
+              git diff --name-only --diff-filter=U | sed 's/^/- /'
+              echo
+              echo "### While applying"
+              git log -1 --oneline REBASE_HEAD 2>/dev/null || true
+            } >> "$GITHUB_STEP_SUMMARY"
+            git rebase --abort || true
+            exit 1
+          fi
+          after=$(git rev-list --count dev..HEAD)
+
+          # A rebase silently drops commits whose patch-id upstream already
+          # carries. That is sometimes correct (a patch was merged upstream)
+          # and sometimes the fork losing its reason to exist, so it stops here
+          # for a human either way.
+          if [ "$after" -ne "$before" ]; then
+            echo "rebase went from $before patches to $after; stopping so someone can look" >&2
+            exit 1
+          fi
+
+          # What changed in the patches themselves, beyond being shifted onto
+          # new context. A conflict resolved differently than last time shows up
+          # here even when the build and the tests stay green.
+          {
+            echo "### Patches before and after the rebase"
+            echo '```'
+            git range-diff "$old_dev..$old_head" "dev..HEAD" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the tree still builds and passes
+        if: steps.check.outputs.updated == 'true'
+        run: |
+          set -euo pipefail
+          go build ./cmd/sst
+          # Note the asymmetry: pkg/runtime/golang carries real tests, while
+          # cmd/sst/mosaic/aws has none at all, so the dev-loop patches are
+          # guarded by compilation alone. A rebase that lands them textually
+          # but leaves them covering the wrong thing passes this gate.
+          go test -race ./pkg/runtime/... ./cmd/sst/mosaic/aws/...
+
+      - name: Resolve the commit to publish
+        id: resolved
+        if: steps.check.outputs.updated == 'true'
+        # Set in both paths: with a rebase this is its result, without one it is
+        # the branch head that is not on npm yet. The publish job checks this
+        # out explicitly rather than resolving a branch name later.
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Push the rebased branch, its backup and the upstream tags
+        if: steps.check.outputs.rebase == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Supplied here rather than persisted at checkout, so it exists only
+          # for this step and not while upstream's code was running.
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin dev
+          # The published version is derived from the nearest upstream tag, so
+          # without these the publish job cannot name its own base.
+          git push origin --tags
+          git push origin "refs/heads/backup/*"
+          # Force is expected: a rebase rewrites these commits by definition.
+          # --force-with-lease so a push that raced with this one is not lost.
+          git push --force-with-lease origin alessandrolattao
+
+  notify:
+    name: Report a failed sync
+    needs: sync
+    # `always()` rather than `failure()` alone: a failure in the check step
+    # leaves `updated` empty, and a sync that fails silently is the worst
+    # outcome for an unattended job.
+    if: always() && needs.sync.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open an issue, unless one is already open
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          UPSTREAM_TAG: ${{ needs.sync.outputs.upstream_tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # Without this the daily schedule files the same issue every morning
+          # until someone acts on it.
+          if [ -n "$(gh issue list --state open --search 'in:title Sync onto upstream' --json number --jq '.[0].number')" ]; then
+            echo "an upstream sync issue is already open, commenting instead"
+            number=$(gh issue list --state open --search 'in:title Sync onto upstream' --json number --jq '.[0].number')
+            gh issue comment "$number" --body "Sync failed again: $RUN_URL"
+            exit 0
+          fi
+
+          gh issue create \
+            --title "Sync onto upstream ${UPSTREAM_TAG:-unknown} needs a hand" \
+            --body "Rebasing \`alessandrolattao\` onto upstream \`${UPSTREAM_TAG:-unknown}\` did not go through unattended, so nothing was published.
+
+          One of: a patch conflicted, the rebase dropped a patch upstream now carries, or the rebased tree stopped building or passing. All three mean upstream touched code a patch depends on, which is worth reading rather than resolving mechanically.
+
+          The branch as it was before the attempt is pushed as \`backup/pre-sync-*\`.
+
+          Run: $RUN_URL
+
+          To pick it up locally:
+
+          \`\`\`bash
+          git fetch upstream dev
+          git checkout dev && git merge --ff-only upstream/dev
+          git checkout alessandrolattao && git rebase dev
+          \`\`\`"
+
+  publish:
+    name: Publish the rebased build
+    needs: sync
+    if: needs.sync.outputs.updated == 'true'
+    uses: ./.github/workflows/fork-publish.yml
+    # The exact commit the rebase produced and the tests passed on, not
+    # whatever the branch head resolves to later.
+    with:
+      sha: ${{ needs.sync.outputs.sha }}
+    permissions:
+      id-token: write
+      contents: read
