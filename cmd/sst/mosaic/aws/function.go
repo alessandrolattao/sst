@@ -11,8 +11,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	stdruntime "runtime"
 	"strings"
 	"time"
+
+	"golang.org/x/sync/semaphore"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/sst/sst/v3/cmd/sst/mosaic/aws/bridge"
@@ -243,9 +246,16 @@ func function(ctx context.Context, input input) {
 	// event loop. Handlers that fail to build are dropped from the set, so the
 	// caller only restarts workers whose code is actually runnable.
 	//
-	// There is no limit on the fan-out at this layer: throttling belongs to the
-	// runtimes, which know what a build of theirs costs. Adding a second limit
-	// here would just park goroutines without changing the effective ceiling.
+	// The fan-out is capped here even though the runtimes cap their own builds,
+	// because their limit only covers the compile itself. Collection.Build
+	// clears and recreates the output directory before reaching the runtime,
+	// and symlinks or encrypts resources after it, so that work would run
+	// unbounded: on a monorepo with hundreds of handlers a single save would
+	// start hundreds of concurrent directory rewrites. The effective ceiling is
+	// the lower of the two limits, and this one only exists to bound what the
+	// other does not cover.
+	buildSlots := semaphore.NewWeighted(int64(max(4, stdruntime.NumCPU())))
+
 	rebuildAll := func(toBuild map[string]bool) {
 		type rebuilt struct {
 			functionID string
@@ -267,6 +277,12 @@ func function(ctx context.Context, input input) {
 
 			pending++
 			go func() {
+				if err := buildSlots.Acquire(ctx, 1); err != nil {
+					done <- rebuilt{functionID: functionID, err: err}
+					return
+				}
+				defer buildSlots.Release(1)
+
 				output, err := input.project.Runtime.Build(ctx, target)
 				done <- rebuilt{functionID: functionID, output: output, err: err}
 			}()
