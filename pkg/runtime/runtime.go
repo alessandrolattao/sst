@@ -17,6 +17,12 @@ import (
 
 type Runtime interface {
 	Match(runtime string) bool
+	// Build compiles one handler. Implementations must be safe for concurrent
+	// calls: both the deploy path (over RPC, from the Pulumi program) and the
+	// dev loop build several handlers at once. An implementation that cannot
+	// run its builds in parallel should say so with its own limit rather than
+	// assume the caller serializes, and one that can should still bound the
+	// fan-out, since a project may have hundreds of handlers.
 	Build(ctx context.Context, input *BuildInput) (*BuildOutput, error)
 	Run(ctx context.Context, input *RunInput) (Worker, error)
 	ShouldRebuild(functionID string, path string) bool
