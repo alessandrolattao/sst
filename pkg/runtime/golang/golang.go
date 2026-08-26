@@ -155,7 +155,24 @@ func (r *Runtime) Build(ctx context.Context, input *runtime.BuildInput) (*runtim
 	args := []string{"build"}
 	env := os.Environ()
 	if !input.Dev {
-		args = append(args, "-ldflags", "-s -w")
+		// -buildid= drops the Go build ID note. That note carries the action
+		// ID, a hash of every source file that fed the build, including the
+		// ones the linker then discards as unreachable. A monorepo where one
+		// package is imported by hundreds of handlers pays for that: touching
+		// a single file in it changes the note in every binary, while the
+		// linked code stays byte-identical. The deploy then re-uploads every
+		// handler and updates every Function, for no change at all.
+		//
+		// Without the note two builds differ if and only if the program
+		// differs, which is what the caller actually asked about. The
+		// remaining reproducibility inputs are the caller's: -trimpath and
+		// -buildvcs=false via GOFLAGS, plus a stable toolchain version.
+		//
+		// Nothing here reads the note back. It exists so `go` can skip work on
+		// *installed* artifacts; these are built into a temp dir, zipped, and
+		// never consulted by `go` again. The on-disk build cache is keyed
+		// separately and is unaffected: compile steps still hit it.
+		args = append(args, "-ldflags", "-s -w -buildid=")
 		env = append(env, "CGO_ENABLED=0")
 		env = append(env, "GOOS=linux")
 		env = append(env, "GOARCH="+goarchFromArchitecture(properties.Architecture))
