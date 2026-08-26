@@ -12,7 +12,7 @@
 
 <p align="center">
   <b>Alessandro Lattao version</b><br />
-  <sub>Unofficial fork of <a href="https://github.com/sst/sst">SST</a> &middot; parallel Go builds, working dev rebuilds</sub>
+  <sub>Unofficial fork of <a href="https://github.com/sst/sst">SST</a> &middot; parallel Go builds, working dev rebuilds, deploys that skip what did not change</sub>
 </p>
 
 <p align="center">
@@ -37,6 +37,8 @@ Everything SST does, it still does. The changes live entirely in the Go runtime 
 
 - **Invalidated handlers rebuild together.** Once rebuild scope follows imports, one save can invalidate hundreds of handlers. They used to be recompiled one after another; now they are compiled concurrently, under a limit.
 
+- **Editing a shared package no longer redeploys every function.** Go stamps each binary with a hash of every source file that fed the build, including the ones the linker then discards as unreachable. Touch one file in a package that hundreds of handlers import and every artifact gets a new hash, so the deploy uploads all of them and updates every Function, for programs whose code is byte-identical to what is already deployed. Deploy builds now link with `-buildid=`, so two builds differ when the program differs and not before. What that gives up is `NT_GNU_BUILD_ID`, which `-s -w` had already made useless here.
+
 - **Deploys stop paying for dev-only work.** The import graph is only ever read by the dev file watcher, but it was captured after every build, roughly doubling the cost of every deploy build. It is now captured only in dev.
 
 - **Smaller fixes.** Resolving `GOMODCACHE` is cancellable instead of outliving a Ctrl-C, `go list` output is decoded through explicit JSON tags, and an unparsable concurrency value warns and keeps the default instead of quietly falling back to serial builds.
@@ -49,6 +51,8 @@ Measured on the 438-handler monorepo this was written for, on a no-op deploy whe
 |---|---|---|
 | build concurrency | 1 (peak 2) | up to the configured limit |
 | per-handler build | ~1.4s, of which half was the dev-only graph capture | ~0.6s |
+
+And on a deploy that did change something: one file edited in the shared handler framework, which 434 of those modules import. Before, all 434 were uploaded again and had their Function updated. After, only the handlers whose linked program actually changed, which for that edit was one.
 
 ## Installation
 
