@@ -1,12 +1,15 @@
 package golang
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sst/sst/v3/pkg/runtime"
 )
 
 // testIntegrationEnv returns a minimal, hermetic env for `go list`.
@@ -207,5 +210,82 @@ func mustWriteFile(t *testing.T, path string, contents string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// buildBootstrap runs a deploy-mode Build (Dev false, the branch that carries
+// the linker flags) and returns the artifact bytes. Each call uses its own
+// functionID, so the output path is fresh every time, the way a deploy's is.
+func buildBootstrap(t *testing.T, cfgDir, handler, functionID string) []byte {
+	t.Helper()
+
+	input := &runtime.BuildInput{
+		CfgPath:    filepath.Join(cfgDir, "sst.config.ts"),
+		FunctionID: functionID,
+		Handler:    handler,
+	}
+	if err := os.MkdirAll(input.Out(), 0o755); err != nil {
+		t.Fatalf("mkdir out: %v", err)
+	}
+
+	out, err := New().Build(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(out.Errors) > 0 {
+		t.Fatalf("Build reported errors: %v", out.Errors)
+	}
+
+	bin, err := os.ReadFile(filepath.Join(input.Out(), "bootstrap"))
+	if err != nil {
+		t.Fatalf("read bootstrap: %v", err)
+	}
+	return bin
+}
+
+// The Go build ID note hashes every source file that fed the build, the ones
+// the linker discards as unreachable included. In a monorepo where a single
+// package is imported by hundreds of handlers that is the whole difference
+// between a deploy that updates one Function and a deploy that re-uploads all
+// of them: the note changes everywhere, the linked code changes nowhere.
+//
+// So the assertion is the property, not the flag. Asserting that the args
+// contain "-buildid=" would pass just as happily if a Go release changed what
+// the flag does.
+func TestBuild_UnreachableSourceChangeKeepsArtifactIdentical(t *testing.T) {
+	requireGoToolchain(t)
+
+	cfgDir := t.TempDir()
+	dir := t.TempDir()
+	mustWriteFile(t, filepath.Join(dir, "go.mod"), "module example.test\n\ngo 1.22\n")
+	mustWriteFile(t, filepath.Join(dir, "main.go"),
+		"package main\n\nimport \"example.test/lib\"\n\nfunc main() { println(lib.Used()) }\n")
+	mustMkdirAll(t, filepath.Join(dir, "lib"))
+	used := filepath.Join(dir, "lib", "used.go")
+	unused := filepath.Join(dir, "lib", "unused.go")
+	mustWriteFile(t, used, "package lib\n\nfunc Used() string { return \"used\" }\n")
+	mustWriteFile(t, unused, "package lib\n\nfunc Unused() string { return \"before\" }\n")
+
+	first := buildBootstrap(t, cfgDir, dir, "fn-first")
+
+	// Same package, a function nothing calls. The linker drops it, so the
+	// program is byte-for-byte the same and the artifact has to be too.
+	mustWriteFile(t, unused, "package lib\n\nfunc Unused() string { return \"after\" }\n")
+	second := buildBootstrap(t, cfgDir, dir, "fn-second")
+
+	if !bytes.Equal(first, second) {
+		t.Errorf("editing an unreachable file changed the artifact (%d vs %d bytes): "+
+			"every handler importing this package would redeploy for nothing",
+			len(first), len(second))
+	}
+
+	// Guard against a vacuous pass: if the two above matched because the build
+	// stopped distinguishing anything at all, this catches it.
+	mustWriteFile(t, used, "package lib\n\nfunc Used() string { return \"changed\" }\n")
+	third := buildBootstrap(t, cfgDir, dir, "fn-third")
+
+	if bytes.Equal(first, third) {
+		t.Error("editing reachable code left the artifact unchanged: " +
+			"a real change would not be deployed")
 	}
 }
