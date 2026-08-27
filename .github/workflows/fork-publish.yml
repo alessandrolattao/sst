@@ -83,11 +83,11 @@ jobs:
           DOCKER_PUSH: false
 
       - name: Test what the fork changes
-        # Scoped to the packages the patches touch. The wider `./...` pulls in
-        # the python runtime's deployment tests, which shell out to `uv` and
+        # Scoped to the two packages the patches touch. The wider `./...` pulls
+        # in the python runtime's deployment tests, which shell out to `uv` and
         # fail without it: coverage this fork neither changes nor needs to gate
         # its own release on.
-        run: go test -race ./pkg/runtime/ ./pkg/runtime/golang/... ./cmd/sst/mosaic/aws/... ./cmd/sst/mosaic/ui/...
+        run: go test -race ./pkg/runtime/golang/... ./cmd/sst/mosaic/aws/...
 
   publish:
     name: Publish to npm

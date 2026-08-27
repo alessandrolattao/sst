@@ -13,7 +13,6 @@ import (
 	"github.com/sst/sst/v3/cmd/sst/mosaic/ui"
 	"github.com/sst/sst/v3/cmd/sst/mosaic/ui/common"
 	"github.com/sst/sst/v3/pkg/project"
-	"github.com/sst/sst/v3/pkg/runtime"
 	"github.com/sst/sst/v3/pkg/server"
 	"github.com/sst/sst/v3/pkg/types/typescript"
 )
@@ -52,7 +51,6 @@ func CmdUI(c *cli.Cli) error {
 			aws.FunctionErrorEvent{},
 			aws.FunctionLogEvent{},
 			aws.FunctionBuildEvent{},
-			runtime.BuildCompleteEvent{},
 		)
 	}
 	if filter == "task" || filter == "" {
@@ -90,7 +88,6 @@ func CmdUI(c *cli.Cli) error {
 			apitype.DiagnosticEvent{},
 			project.CompleteEvent{},
 			typescript.WarningEvent{},
-			runtime.BuildCompleteEvent{},
 		)
 	}
 	evts, err := dev.Stream(c.Context, url, types...)

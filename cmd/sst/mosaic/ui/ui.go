@@ -22,7 +22,6 @@ import (
 	"github.com/sst/sst/v3/cmd/sst/mosaic/ui/common"
 	"github.com/sst/sst/v3/pkg/flag"
 	"github.com/sst/sst/v3/pkg/project"
-	"github.com/sst/sst/v3/pkg/runtime"
 	"github.com/sst/sst/v3/pkg/types/typescript"
 
 	"golang.org/x/crypto/ssh/terminal"
@@ -230,21 +229,14 @@ func (u *UI) Event(unknown interface{}) {
 		if !u.matchFilter(evt.FunctionID) {
 			return
 		}
-		// Only the failures. A build that worked is announced by
-		// runtime.BuildCompleteEvent, which says the same thing plus how long
-		// it took; printing both would show every rebuild twice.
 		if len(evt.Errors) > 0 {
 			u.printEvent(TEXT_DANGER, "Build Error", u.functionName(evt.FunctionID))
 			for _, item := range evt.Errors {
 				u.printEvent(TEXT_DANGER, "", "  "+strings.TrimSpace(item))
 			}
-		}
-
-	case *runtime.BuildCompleteEvent:
-		if !u.matchFilter(evt.FunctionID) {
 			return
 		}
-		u.printEvent(TEXT_SUCCESS, "Built", formatBuildComplete(evt))
+		u.printEvent(TEXT_SUCCESS, "Build", u.functionName(evt.FunctionID))
 
 	case *aws.FunctionErrorEvent:
 		if !u.matchFilter(evt.FunctionID) {
@@ -621,16 +613,6 @@ func (u *UI) functionName(functionID string) string {
 		}
 	}
 	return functionID
-}
-
-// formatBuildComplete names the handler that was just compiled and how long it
-// took, in the same shape printProgress uses for a deployed resource.
-func formatBuildComplete(evt *runtime.BuildCompleteEvent) string {
-	name := strings.TrimPrefix(evt.Handler, "./")
-	if name == "" {
-		name = evt.FunctionID
-	}
-	return fmt.Sprintf("%s (%.1fs)", name, evt.Duration.Seconds())
 }
 
 func (u *UI) printProgress(barColor lipgloss.Style, label string, duration time.Duration, urn string) {
