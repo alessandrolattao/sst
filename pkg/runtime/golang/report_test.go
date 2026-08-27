@@ -1,6 +1,9 @@
 package golang
 
 import (
+	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,5 +32,38 @@ func TestReportBuilt(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("no build line published")
+	}
+}
+
+// The line is only worth anything if a real build actually emits one, so this
+// compiles a handler the way a deploy does and waits for its announcement.
+func TestBuildReportsWhatItTook(t *testing.T) {
+	requireGoToolchain(t)
+
+	cfgDir := t.TempDir()
+	dir := t.TempDir()
+	mustWriteFile(t, filepath.Join(dir, "go.mod"), "module example.test\n\ngo 1.22\n")
+	mustWriteFile(t, filepath.Join(dir, "main.go"), "package main\n\nfunc main() {}\n")
+
+	events := bus.Subscribe(&common.StdoutEvent{})
+	buildBootstrap(t, cfgDir, dir, "fn-reported")
+
+	// Every other test in this package builds too, so take the first line that
+	// names this handler rather than the first line published.
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case evt := <-events:
+			line := ansi.Strip(evt.(*common.StdoutEvent).Line)
+			if !strings.Contains(line, dir) {
+				continue
+			}
+			if !regexp.MustCompile(`^\|  Built\s+\S+ \(\d+\.\d+s\)$`).MatchString(line) {
+				t.Fatalf("unexpected build line: %q", line)
+			}
+			return
+		case <-deadline:
+			t.Fatal("the build published no line naming its handler")
+		}
 	}
 }
