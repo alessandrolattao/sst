@@ -11,9 +11,22 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
+	"github.com/sst/sst/v3/pkg/bus"
 	"github.com/sst/sst/v3/pkg/project/path"
 )
+
+// BuildCompleteEvent is published every time a handler finishes compiling, so
+// the deploy output can show how long each one took. The dev loop reports its
+// own rebuilds through aws.FunctionBuildEvent, so this one is only rendered
+// where that isn't: `sst deploy`.
+type BuildCompleteEvent struct {
+	FunctionID string        `json:"functionID"`
+	Handler    string        `json:"handler"`
+	Runtime    string        `json:"runtime"`
+	Duration   time.Duration `json:"duration"`
+}
 
 type Runtime interface {
 	Match(runtime string) bool
@@ -119,6 +132,7 @@ func (c *Collection) Runtime(input string) (Runtime, bool) {
 func (c *Collection) Build(ctx context.Context, input *BuildInput) (*BuildOutput, error) {
 	slog.Info("building function", "runtime", input.Runtime, "functionID", input.FunctionID)
 	defer slog.Info("function built", "runtime", input.Runtime, "functionID", input.FunctionID)
+	start := time.Now()
 	out := input.Out()
 	var result *BuildOutput
 
@@ -194,6 +208,17 @@ func (c *Collection) Build(ctx context.Context, input *BuildInput) (*BuildOutput
 				}
 			}
 		}
+	}
+
+	// A prebuilt bundle was handed to us, nothing was compiled, so there is no
+	// build time worth reporting.
+	if input.Bundle == "" {
+		bus.Publish(&BuildCompleteEvent{
+			FunctionID: input.FunctionID,
+			Handler:    input.Handler,
+			Runtime:    input.Runtime,
+			Duration:   time.Since(start),
+		})
 	}
 
 	if input.EncryptionKey != "" {
