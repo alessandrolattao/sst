@@ -4,7 +4,9 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/sst/sst/v3/pkg/bus"
 	"github.com/sst/sst/v3/pkg/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,13 +14,17 @@ import (
 
 type mockRuntime struct {
 	matchFn func(string) bool
+	buildFn func(*runtime.BuildInput) (*runtime.BuildOutput, error)
 }
 
 func (m *mockRuntime) Match(r string) bool {
 	return m.matchFn(r)
 }
 func (m *mockRuntime) Build(ctx context.Context, input *runtime.BuildInput) (*runtime.BuildOutput, error) {
-	return nil, nil
+	if m.buildFn == nil {
+		return nil, nil
+	}
+	return m.buildFn(input)
 }
 func (m *mockRuntime) Run(ctx context.Context, input *runtime.RunInput) (runtime.Worker, error) {
 	return nil, nil
@@ -78,5 +84,60 @@ func TestCollectionRuntime(t *testing.T) {
 
 		_, ok := c.Runtime("anything")
 		assert.False(t, ok)
+	})
+}
+
+func TestCollectionBuildPublishesCompletion(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "sst.config.ts")
+
+	t.Run("compiled handler", func(t *testing.T) {
+		mr := &mockRuntime{
+			matchFn: func(r string) bool { return r == "go" },
+			buildFn: func(input *runtime.BuildInput) (*runtime.BuildOutput, error) {
+				return &runtime.BuildOutput{Handler: input.Handler}, nil
+			},
+		}
+		c := runtime.NewCollection(cfgPath, mr)
+		events := bus.Subscribe(&runtime.BuildCompleteEvent{})
+
+		_, err := c.Build(context.Background(), &runtime.BuildInput{
+			CfgPath:    cfgPath,
+			FunctionID: "myFunc",
+			Handler:    "./services/api/handler.go",
+			Runtime:    "go",
+		})
+		require.NoError(t, err)
+
+		select {
+		case evt := <-events:
+			complete, ok := evt.(*runtime.BuildCompleteEvent)
+			require.True(t, ok)
+			assert.Equal(t, "myFunc", complete.FunctionID)
+			assert.Equal(t, "./services/api/handler.go", complete.Handler)
+			assert.Equal(t, "go", complete.Runtime)
+			assert.Positive(t, complete.Duration)
+		case <-time.After(time.Second):
+			t.Fatal("no build complete event published")
+		}
+	})
+
+	t.Run("prebuilt bundle", func(t *testing.T) {
+		mr := &mockRuntime{matchFn: func(r string) bool { return r == "go" }}
+		c := runtime.NewCollection(cfgPath, mr)
+		events := bus.Subscribe(&runtime.BuildCompleteEvent{})
+
+		_, err := c.Build(context.Background(), &runtime.BuildInput{
+			CfgPath:    cfgPath,
+			FunctionID: "myFunc",
+			Bundle:     t.TempDir(),
+			Runtime:    "go",
+		})
+		require.NoError(t, err)
+
+		select {
+		case evt := <-events:
+			t.Fatalf("unexpected event for a bundle that was never compiled: %v", evt)
+		case <-time.After(50 * time.Millisecond):
+		}
 	})
 }

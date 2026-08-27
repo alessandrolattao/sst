@@ -22,6 +22,7 @@ import (
 	"github.com/sst/sst/v3/cmd/sst/mosaic/ui/common"
 	"github.com/sst/sst/v3/pkg/flag"
 	"github.com/sst/sst/v3/pkg/project"
+	"github.com/sst/sst/v3/pkg/runtime"
 	"github.com/sst/sst/v3/pkg/types/typescript"
 
 	"golang.org/x/crypto/ssh/terminal"
@@ -237,6 +238,12 @@ func (u *UI) Event(unknown interface{}) {
 			return
 		}
 		u.printEvent(TEXT_SUCCESS, "Build", u.functionName(evt.FunctionID))
+
+	case *runtime.BuildCompleteEvent:
+		if !u.matchFilter(evt.FunctionID) {
+			return
+		}
+		u.printEvent(TEXT_SUCCESS, "Built", formatBuildComplete(evt))
 
 	case *aws.FunctionErrorEvent:
 		if !u.matchFilter(evt.FunctionID) {
@@ -613,6 +620,16 @@ func (u *UI) functionName(functionID string) string {
 		}
 	}
 	return functionID
+}
+
+// formatBuildComplete names the handler that was just compiled and how long it
+// took, in the same shape printProgress uses for a deployed resource.
+func formatBuildComplete(evt *runtime.BuildCompleteEvent) string {
+	name := strings.TrimPrefix(evt.Handler, "./")
+	if name == "" {
+		name = evt.FunctionID
+	}
+	return fmt.Sprintf("%s (%.1fs)", name, evt.Duration.Seconds())
 }
 
 func (u *UI) printProgress(barColor lipgloss.Style, label string, duration time.Duration, urn string) {
