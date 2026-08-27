@@ -41,7 +41,7 @@ Everything SST does, it still does. The changes live entirely in the Go runtime 
 
 - **Deploys stop paying for dev-only work.** The import graph is only ever read by the dev file watcher, but it was captured after every build, roughly doubling the cost of every deploy build. It is now captured only in dev.
 
-- **Deploys say how long each handler took.** A deploy printed nothing between asking for a build and the Function resource turning up minutes later, so the compile time of a single handler was only visible by reading the debug log. Every finished build now prints a `Built` line with its handler and its seconds, next to the `Created`/`Updated` lines that already carry a duration. Dev is untouched: its rebuild loop already reports itself.
+- **Every build says how long it took.** A deploy printed nothing between asking for a build and the Function resource turning up minutes later, and dev announced a rebuild without ever saying what it cost, so the compile time of a single handler was only visible by reading the debug log. Every finished build now prints a `Built` line with its handler and its seconds, next to the `Created`/`Updated` lines that already carry a duration. It replaces the old duration-less dev line rather than joining it.
 
 - **Smaller fixes.** Resolving `GOMODCACHE` is cancellable instead of outliving a Ctrl-C, `go list` output is decoded through explicit JSON tags, and an unparsable concurrency value warns and keeps the default instead of quietly falling back to serial builds.
 
