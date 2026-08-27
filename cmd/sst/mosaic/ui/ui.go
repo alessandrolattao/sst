@@ -230,14 +230,15 @@ func (u *UI) Event(unknown interface{}) {
 		if !u.matchFilter(evt.FunctionID) {
 			return
 		}
+		// Only the failures. A build that worked is announced by
+		// runtime.BuildCompleteEvent, which says the same thing plus how long
+		// it took; printing both would show every rebuild twice.
 		if len(evt.Errors) > 0 {
 			u.printEvent(TEXT_DANGER, "Build Error", u.functionName(evt.FunctionID))
 			for _, item := range evt.Errors {
 				u.printEvent(TEXT_DANGER, "", "  "+strings.TrimSpace(item))
 			}
-			return
 		}
-		u.printEvent(TEXT_SUCCESS, "Build", u.functionName(evt.FunctionID))
 
 	case *runtime.BuildCompleteEvent:
 		if !u.matchFilter(evt.FunctionID) {
