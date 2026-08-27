@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 
@@ -19,22 +20,42 @@ import (
 // the test isolated from any go.work file the host may have.
 func testIntegrationEnv(t *testing.T) []string {
 	t.Helper()
+	home := t.TempDir()
+	disableTelemetry(t, home)
 	return []string{
 		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + t.TempDir(),
+		"HOME=" + home,
 		"GOMODCACHE=" + filepath.Join(t.TempDir(), "modcache"),
 		"GOCACHE=" + filepath.Join(t.TempDir(), "gocache"),
 		"GOPROXY=off",
-		// The go command writes telemetry counters under $HOME asynchronously,
-		// and t.TempDir removes that directory as soon as the test ends: the
-		// two race, and the cleanup fails with "directory not empty". Nothing
-		// here wants telemetry anyway.
-		"GOTELEMETRY=off",
 		"GOFLAGS=-mod=mod",
 		"GOTOOLCHAIN=local",
 		"GOWORK=off",
 		"GOSUMDB=off",
 	}
+}
+
+// disableTelemetry turns Go telemetry off for a toolchain run rooted at the
+// given HOME.
+//
+// The go command writes counter files under the user config directory while it
+// works, and t.TempDir removes that directory as soon as the test ends: the two
+// race, and the cleanup fails the test with "directory not empty". Nothing here
+// wants telemetry anyway.
+//
+// It has to be the mode file. GOTELEMETRY is reported by `go env` but is not
+// read back from the environment, and GOTELEMETRYDIR does not move the counters
+// either -- both were tried, and the counters still landed under HOME.
+func disableTelemetry(t *testing.T, home string) {
+	t.Helper()
+	// Where os.UserConfigDir would land for a process with this HOME.
+	config := filepath.Join(home, ".config")
+	if goruntime.GOOS == "darwin" {
+		config = filepath.Join(home, "Library", "Application Support")
+	}
+	dir := filepath.Join(config, "go", "telemetry")
+	mustMkdirAll(t, dir)
+	mustWriteFile(t, filepath.Join(dir, "mode"), "off\n")
 }
 
 // requireGoToolchain skips when `go test -short` is set or when the
