@@ -70,6 +70,30 @@ type input struct {
 	prefix  string
 }
 
+// eagerRebuildTargets picks the handlers to rebuild up front after a deploy:
+// one entry per distinct function ID among the running workers, keeping only
+// the ones whose runtime restarts eagerly. A lazy runtime builds its handler
+// when something invokes it, which may never happen, so pre-building it would
+// trade a compile nobody waits on for one nobody asked for. A worker whose
+// target is gone is skipped: without a BuildInput there is nothing to build.
+func eagerRebuildTargets(
+	functionIDs []string,
+	targets map[string]*runtime.BuildInput,
+	runEagerly func(runtime string) bool,
+) map[string]bool {
+	toBuild := map[string]bool{}
+	for _, functionID := range functionIDs {
+		target, ok := targets[functionID]
+		if !ok {
+			continue
+		}
+		if runEagerly(target.Runtime) {
+			toBuild[functionID] = true
+		}
+	}
+	return toBuild
+}
+
 func function(ctx context.Context, input input) {
 	log := slog.Default().With("service", "aws.function")
 	server := fmt.Sprintf("localhost:%d/lambda/", input.server.Port)
@@ -467,6 +491,18 @@ func function(ctx context.Context, input input) {
 					info.Worker.Stop()
 				}
 				builds = map[string]*runtime.BuildOutput{}
+
+				// A deploy drops every cached build, and each eager worker below
+				// asks for its handler back through startWorker, which compiles
+				// them one at a time. Rebuilding them here first sends the same
+				// work through the bounded fan-out the file watcher already uses,
+				// so startWorker finds every build cached.
+				functionIDs := make([]string, 0, len(workers))
+				for _, info := range workers {
+					functionIDs = append(functionIDs, info.FunctionID)
+				}
+				rebuildAll(eagerRebuildTargets(functionIDs, targets, input.project.Runtime.ShouldRunEagerly))
+
 				for workerID, info := range workers {
 					restartOrDeferWorker(workerID, info)
 				}
