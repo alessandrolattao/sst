@@ -37,6 +37,8 @@ Everything SST does, it still does. The changes live entirely in the Go runtime 
 
 - **Invalidated handlers rebuild together.** Once rebuild scope follows imports, one save can invalidate hundreds of handlers. They used to be recompiled one after another; now they are compiled concurrently, under a limit.
 
+- **A deploy stops recompiling handlers one at a time.** Every deploy drops the dev build cache, and each worker then restarts and compiles whatever it no longer finds there, one after another on the event loop. On a stage with 18 Go handlers in dev that was 50 seconds of wall clock, for source that had not changed. The same set now goes through the concurrent rebuild above, and handlers whose runtime starts lazily are left to compile when something invokes them.
+
 - **Editing a shared package no longer redeploys every function.** Go stamps each binary with a hash of every source file that fed the build, including the ones the linker then discards as unreachable. Touch one file in a package that hundreds of handlers import and every artifact gets a new hash, so the deploy uploads all of them and updates every Function, for programs whose code is byte-identical to what is already deployed. Deploy builds now link with `-buildid=`, so two builds differ when the program differs and not before. What that gives up is `NT_GNU_BUILD_ID`, which `-s -w` had already made useless here.
 
 - **Deploys stop paying for dev-only work.** The import graph is only ever read by the dev file watcher, but it was captured after every build, roughly doubling the cost of every deploy build. It is now captured only in dev.
