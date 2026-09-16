@@ -217,11 +217,17 @@ jobs:
 
   notify:
     name: Report a failed sync
-    needs: sync
+    needs: [sync, publish]
     # `always()` rather than `failure()` alone: a failure in the check step
     # leaves `updated` empty, and a sync that fails silently is the worst
     # outcome for an unattended job.
-    if: always() && needs.sync.result == 'failure'
+    #
+    # Both jobs, not just the rebase. Publishing is where a release actually
+    # reaches npm, and a publish that dies leaves the branch moved on with
+    # nothing shipped: the same silence this job exists to break, and it once
+    # went unnoticed for eleven days. A skipped job's result is `skipped` and
+    # never `failure`, so the ordinary "nothing to release" run stays quiet.
+    if: always() && (needs.sync.result == 'failure' || needs.publish.result == 'failure')
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -231,27 +237,21 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           UPSTREAM_TAG: ${{ needs.sync.outputs.upstream_tag }}
+          SYNC_RESULT: ${{ needs.sync.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          # Without this the daily schedule files the same issue every morning
-          # until someone acts on it.
-          if [ -n "$(gh issue list --state open --search 'in:title Sync onto upstream' --json number --jq '.[0].number')" ]; then
-            echo "an upstream sync issue is already open, commenting instead"
-            number=$(gh issue list --state open --search 'in:title Sync onto upstream' --json number --jq '.[0].number')
-            gh issue comment "$number" --body "Sync failed again: $RUN_URL"
-            exit 0
-          fi
 
-          gh issue create \
-            --title "Sync onto upstream ${UPSTREAM_TAG:-unknown} needs a hand" \
-            --body "Rebasing \`alessandrolattao\` onto upstream \`${UPSTREAM_TAG:-unknown}\` did not go through unattended, so nothing was published.
+          # A conflicted rebase and a rejected npm publish share nothing but
+          # the outcome, so the issue says which one happened and what to read.
+          # `sync` is asked first: when it fails, `publish` never ran at all.
+          if [ "$SYNC_RESULT" = "failure" ]; then
+            stage="Rebase"
+            body="Rebasing \`alessandrolattao\` onto upstream \`${UPSTREAM_TAG:-unknown}\` did not go through unattended, so nothing was published.
 
           One of: a patch conflicted, the rebase dropped a patch upstream now carries, or the rebased tree stopped building or passing. All three mean upstream touched code a patch depends on, which is worth reading rather than resolving mechanically.
 
           The branch as it was before the attempt is pushed as \`backup/pre-sync-*\`.
-
-          Run: $RUN_URL
 
           To pick it up locally:
 
@@ -260,6 +260,29 @@ jobs:
           git checkout dev && git merge --ff-only upstream/dev
           git checkout alessandrolattao && git rebase dev
           \`\`\`"
+          else
+            stage="Publish"
+            body="The tree is on upstream \`${UPSTREAM_TAG:-unknown}\`, it built and it passed, but publishing it to npm failed. The branch has moved on with nothing shipped.
+
+          Worth checking first, because it is invisible from the build logs: npm's trusted publishing validates the CALLING workflow's filename, which on this path is \`fork-sync-upstream.yml\` and not the \`fork-publish.yml\` that holds the \`npm publish\`. Registered on only one of the two, npm rejects the OIDC token, falls back to anonymous, and answers \`404 Not Found\` on the \`PUT\` -- which reads like a missing package rather than a refused credential.
+
+          Nothing to undo before retrying: versions are immutable per package, and the script skips what is already published, so the next run resumes where this one stopped."
+          fi
+
+          # Without this the daily schedule files the same issue every morning
+          # until someone acts on it.
+          number=$(gh issue list --state open --search 'in:title Sync onto upstream' --json number --jq '.[0].number')
+          if [ -n "$number" ]; then
+            echo "an upstream sync issue is already open, commenting instead"
+            gh issue comment "$number" --body "$stage failed again: $RUN_URL"
+            exit 0
+          fi
+
+          gh issue create \
+            --title "Sync onto upstream ${UPSTREAM_TAG:-unknown} needs a hand" \
+            --body "$body
+
+          Run: $RUN_URL"
 
   publish:
     name: Publish the rebased build
