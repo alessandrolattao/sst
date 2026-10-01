@@ -177,7 +177,7 @@ jobs:
           # cmd/sst/mosaic/aws has none at all, so the dev-loop patches are
           # guarded by compilation alone. A rebase that lands them textually
           # but leaves them covering the wrong thing passes this gate.
-          go test -race ./pkg/runtime/golang/... ./cmd/sst/mosaic/aws/...
+          go test -race ./pkg/runtime/golang/... ./cmd/sst/mosaic/aws/... ./cmd/sst/mosaic/ui/...
         env:
           DOCKER_PUSH: false
 
