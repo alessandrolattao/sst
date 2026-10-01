@@ -45,6 +45,8 @@ Everything SST does, it still does. The changes live entirely in the Go runtime 
 
 - **Every Go build says how long it took.** A deploy printed nothing between asking for a build and the Function resource turning up minutes later, so the compile time of a single handler was only visible by reading the debug log. Each finished build now prints a `Built` line with its handler and its seconds, in the same shape as the `Created`/`Updated` lines that already carry a duration. It rides on the one event SST's UI prints verbatim, so this stays a change to the Go runtime: no new event type, no case added to the printer, nothing for an upstream merge to land on.
 
+- **A big deploy stops flooding the terminal.** The deploy footer lists every resource in flight and redraws in place every 100ms, by moving the cursor back up to its first line. With more resources in flight than the terminal has rows, the cursor stops at the top row, so every redraw left the whole list in the scrollback again: the same `Creating` line tens of thousands of times. The footer now shows only the lines that fit, with the status line still last. What it says and when is unchanged.
+
 - **Smaller fixes.** Resolving `GOMODCACHE` is cancellable instead of outliving a Ctrl-C, `go list` output is decoded through explicit JSON tags, and an unparsable concurrency value warns and keeps the default instead of quietly falling back to serial builds.
 
 ## What it costs
