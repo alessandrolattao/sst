@@ -75,7 +75,7 @@ func (m *footer) Start(ctx context.Context) {
 			if !ok {
 				return
 			}
-			width, _, _ := terminal.GetSize(int(os.Stdout.Fd()))
+			width, height, _ := terminal.GetSize(int(os.Stdout.Fd()))
 			switch evt := val.(type) {
 			case lineMsg:
 				m.clear()
@@ -83,10 +83,21 @@ func (m *footer) Start(ctx context.Context) {
 			default:
 				m.Update(val)
 			}
-			next := m.View(width)
+			next := fitHeight(m.View(width), height)
 			m.Render(width, next)
 		}
 	}
+}
+
+// fitHeight drops the in-flight lines that do not fit the terminal, keeping the status
+// line last. Render moves the cursor up to redraw, and it cannot go above the top row:
+// a footer taller than the terminal leaves a full copy in the scrollback on every tick.
+func fitHeight(view string, height int) string {
+	lines := strings.Split(view, "\n")
+	if height < 2 || len(lines) < height {
+		return view
+	}
+	return strings.Join(append(lines[:height-2], lines[len(lines)-1]), "\n")
 }
 
 func (m *footer) clear() {
