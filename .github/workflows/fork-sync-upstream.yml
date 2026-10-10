@@ -108,6 +108,11 @@ jobs:
         run: |
           set -euo pipefail
           git branch "backup/pre-sync-$(date -u +%Y%m%dT%H%M%SZ)" alessandrolattao
+          # The checkout above creates only the branch it was asked for, so
+          # `dev` exists solely as origin/dev. Created explicitly, because a
+          # bare `git checkout dev` cannot guess it either: with upstream/dev
+          # fetched too, the name matches two remotes and git refuses.
+          git branch dev origin/dev
           old_dev=$(git rev-parse dev)
           old_head=$(git rev-parse alessandrolattao)
 
