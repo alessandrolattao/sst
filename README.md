@@ -47,6 +47,8 @@ Everything SST does, it still does. The changes live entirely in the Go runtime 
 
 - **A big deploy stops flooding the terminal.** The deploy footer lists every resource in flight and redraws in place every 100ms, by moving the cursor back up to its first line. With more resources in flight than the terminal has rows, the cursor stops at the top row, so every redraw left the whole list in the scrollback again: the same `Creating` line tens of thousands of times. The footer now shows only the lines that fit, with the status line still last. What it says and when is unchanged.
 
+- **The state is half the size.** SST runs Pulumi against its local DIY backend, which rewrote the whole state as indented JSON after every resource it changed, while SST uploaded that same file to the state bucket during the deploy. Pulumi has written it compact since 3.238, and the fork is on Pulumi 3.270: on a test app with 40 components the state went from 164 KB to 82 KB. Pulumi's Node.js SDK now needs Node.js 22 or later.
+
 - **Smaller fixes.** Resolving `GOMODCACHE` is cancellable instead of outliving a Ctrl-C, `go list` output is decoded through explicit JSON tags, and an unparsable concurrency value warns and keeps the default instead of quietly falling back to serial builds.
 
 ## What it costs
