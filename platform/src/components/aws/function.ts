@@ -2654,7 +2654,13 @@ export class Function extends Component implements Link.Linkable {
             });
 
             const hash = crypto.createHash("sha256");
-            hash.update(await fs.promises.readFile(zipPath));
+            // Hashed through a Uint8Array view of the same bytes, not the
+            // Buffer itself: when the app's lib and a nested @types/node
+            // disagree on Buffer's iterators, a Buffer is not a BinaryLike.
+            const zip = await fs.promises.readFile(zipPath);
+            hash.update(
+              new Uint8Array(zip.buffer, zip.byteOffset, zip.byteLength),
+            );
             const hashValue = hash.digest("hex");
             const assetBucket = region.apply((region) =>
               bootstrap.forRegion(region).then((d) => d.asset),
