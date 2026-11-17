@@ -81,7 +81,7 @@ func CmdUI(c *cli.Cli) error {
 			fmt.Println(ui.TEXT_GRAY.Render("Waiting for a deploy..."))
 			fmt.Println()
 		}
-		types = append(types, journal.LogEvent{})
+		types = append(types, journal.ReportEvent{})
 	}
 	if filter == "sst" || filter == "" {
 		u = ui.New(c.Context)
@@ -132,8 +132,6 @@ func CmdUI(c *cli.Cli) error {
 				if e.PaneKey == filter {
 					u.SetFilter(e.Value, e.PaneKey)
 				}
-			case *journal.LogEvent:
-				fmt.Println(e.Line)
 			default:
 				u.Event(evt)
 			}

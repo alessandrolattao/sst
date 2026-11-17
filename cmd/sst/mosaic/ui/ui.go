@@ -21,6 +21,7 @@ import (
 	"github.com/sst/sst/v3/cmd/sst/mosaic/deployer"
 	"github.com/sst/sst/v3/cmd/sst/mosaic/ui/common"
 	"github.com/sst/sst/v3/pkg/flag"
+	"github.com/sst/sst/v3/pkg/journal"
 	"github.com/sst/sst/v3/pkg/project"
 	"github.com/sst/sst/v3/pkg/runtime"
 	"github.com/sst/sst/v3/pkg/types/typescript"
@@ -250,6 +251,9 @@ func (u *UI) Event(unknown interface{}) {
 
 	case *runtime.BuildEvent:
 		u.printEvent(TEXT_SUCCESS, "Build", withDuration(strings.TrimPrefix(evt.Handler, "./"), evt.Duration))
+
+	case *journal.ReportEvent:
+		u.printEvent(TEXT_SUCCESS, "Journal", evt.Message)
 
 	case *aws.FunctionErrorEvent:
 		if !u.matchFilter(evt.FunctionID) {

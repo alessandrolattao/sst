@@ -282,7 +282,7 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 	var journaled *journal.Server
 	if flag.SST_PULUMI_JOURNALING && input.Command != "diff" {
 		journaled, err = journal.Start(journal.Options{StatePath: workdir.state(), Org: "organization",
-			Project: p.app.Name, Stack: p.app.Stage, Dir: workdir.Backend(), Dev: input.Dev})
+			Project: p.app.Name, Stack: p.app.Stage, Dir: workdir.Backend()})
 		if err != nil {
 			return err
 		}

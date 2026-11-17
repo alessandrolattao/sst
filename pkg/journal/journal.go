@@ -45,8 +45,6 @@ type Options struct {
 	// Dir is where Pulumi may keep the credentials it stores for this backend.
 	// It should be the update's own working directory, which SST removes.
 	Dir string
-	// Dev sends progress to the `sst dev` pane rather than the deploy output.
-	Dev bool
 }
 
 // Server is the backend for one update.
@@ -96,7 +94,7 @@ func Start(opts Options) (*Server, error) {
 	s := &Server{
 		opts:   opts,
 		log:    slog.Default().With("service", "journal"),
-		report: reporter{dev: opts.Dev},
+		report: reporter{},
 		start:  time.Now(),
 		// The same stack always gets the same ID.
 		stackID: uuid.NewSHA1(uuid.NameSpaceURL,
