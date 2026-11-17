@@ -87,7 +87,7 @@ jobs:
         # in the python runtime's deployment tests, which shell out to `uv` and
         # fail without it: coverage this fork neither changes nor needs to gate
         # its own release on.
-        run: go test -race ./pkg/runtime/golang/... ./cmd/sst/mosaic/aws/... ./cmd/sst/mosaic/ui/...
+        run: go test -race ./pkg/runtime/golang/... ./cmd/sst/mosaic/aws/... ./cmd/sst/mosaic/ui/... ./pkg/journal/...
 
   publish:
     name: Publish to npm
