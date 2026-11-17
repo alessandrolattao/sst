@@ -418,7 +418,8 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 	advisories := map[string]bool{}
 
 	partial := make(chan int, 1000)
-	partialContext, partialCancel := context.WithCancel(ctx)
+	// Not ended by an interrupt: pushes go on while Pulumi winds down.
+	partialContext, partialCancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer partialCancel()
 	partialDone := make(chan error)
 	go func() {
@@ -462,6 +463,12 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 					log.Error("failed to send interrupt", "err", err)
 				}
 				bus.Publish(&CancelledEvent{})
+				// Push the state now: what interrupted us may kill us next.
+				// Never waiting on it, so a second interrupt still reaches Pulumi.
+				select {
+				case partial <- 1:
+				default:
+				}
 				interruptChannel := make(chan os.Signal, 1)
 				signal.Notify(interruptChannel, syscall.SIGINT, syscall.SIGTERM)
 
