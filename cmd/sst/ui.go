@@ -12,6 +12,7 @@ import (
 	"github.com/sst/sst/v3/cmd/sst/mosaic/dev"
 	"github.com/sst/sst/v3/cmd/sst/mosaic/ui"
 	"github.com/sst/sst/v3/cmd/sst/mosaic/ui/common"
+	"github.com/sst/sst/v3/pkg/journal"
 	"github.com/sst/sst/v3/pkg/project"
 	"github.com/sst/sst/v3/pkg/server"
 	"github.com/sst/sst/v3/pkg/types/typescript"
@@ -72,6 +73,15 @@ func CmdUI(c *cli.Cli) error {
 	if filter == "function" || filter == "task" {
 		types = append(types, ui.PaneFilterEvent{})
 	}
+	if filter == "journal" || filter == "" {
+		if filter != "" {
+			fmt.Println(ui.TEXT_HIGHLIGHT_BOLD.Render("Pulumi Backend"))
+			fmt.Println()
+			fmt.Println(ui.TEXT_GRAY.Render("Waiting for a deploy..."))
+			fmt.Println()
+		}
+		types = append(types, journal.LogEvent{})
+	}
 	if filter == "sst" || filter == "" {
 		u = ui.New(c.Context)
 		types = append(types,
@@ -120,6 +130,8 @@ func CmdUI(c *cli.Cli) error {
 				if e.PaneKey == filter {
 					u.SetFilter(e.Value, e.PaneKey)
 				}
+			case *journal.LogEvent:
+				fmt.Println(e.Line)
 			default:
 				u.Event(evt)
 			}
