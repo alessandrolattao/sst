@@ -276,6 +276,16 @@ func CmdMosaic(c *cli.Cli) error {
 			Autostart: true,
 			Env:       append(multiEnv, "SST_LOG="+p.PathLog("ui-deploy")),
 		})
+		if flag.SST_PULUMI_JOURNALING {
+			multi.AddProcess(multiplexer.PaneConfig{
+				Key:       "journal",
+				Args:      []string{currentExecutable, "ui", "--filter=journal"},
+				Icon:      "≡",
+				Title:     "Pulumi Backend",
+				Autostart: true,
+				Env:       append(multiEnv, "SST_LOG="+p.PathLog("ui-journal")),
+			})
+		}
 		multi.AddProcess(multiplexer.PaneConfig{
 			Key:            "function",
 			Args:           []string{currentExecutable, "ui", "--filter=" + fnFilter},
@@ -431,6 +441,9 @@ func CmdMosaic(c *cli.Cli) error {
 			fnFilter = "worker"
 		}
 		mono.AddProcess("deploy", []string{currentExecutable, "ui", "--filter=sst"}, "", "SST", true)
+		if flag.SST_PULUMI_JOURNALING {
+			mono.AddProcess("journal", []string{currentExecutable, "ui", "--filter=journal"}, "", "Pulumi Backend", true)
+		}
 		mono.AddProcess("function", []string{currentExecutable, "ui", "--filter=" + fnFilter}, "", fnTitle, true)
 
 		wg.Go(func() error {
