@@ -239,6 +239,35 @@ func mustWriteFile(t *testing.T, path string, contents string) {
 	}
 }
 
+// A build says how long it took, so the deploy and sst dev can print it.
+func TestBuildSaysHowLongItTook(t *testing.T) {
+	requireGoToolchain(t)
+
+	cfgDir := t.TempDir()
+	dir := t.TempDir()
+	mustWriteFile(t, filepath.Join(dir, "go.mod"), "module example.test\n\ngo 1.22\n")
+	mustWriteFile(t, filepath.Join(dir, "main.go"), "package main\n\nfunc main() {}\n")
+
+	input := &runtime.BuildInput{
+		CfgPath:    filepath.Join(cfgDir, "sst.config.ts"),
+		FunctionID: "fn-timed",
+		Handler:    dir,
+	}
+	if err := os.MkdirAll(input.Out(), 0o755); err != nil {
+		t.Fatalf("mkdir out: %v", err)
+	}
+	out, err := New().Build(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(out.Errors) > 0 {
+		t.Fatalf("Build reported errors: %v", out.Errors)
+	}
+	if out.Duration <= 0 {
+		t.Fatalf("Duration = %v, want the time the build took", out.Duration)
+	}
+}
+
 // buildBootstrap runs a deploy-mode Build (Dev false, the branch that carries
 // the linker flags) and returns the artifact bytes. Each call uses its own
 // functionID, so the output path is fresh every time, the way a deploy's is.

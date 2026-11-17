@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/sst/sst/v3/pkg/project/path"
 )
@@ -76,6 +77,18 @@ type BuildOutput struct {
 	Handler    string   `json:"handler"`
 	Errors     []string `json:"errors"`
 	Sourcemaps []string `json:"sourcemaps"`
+	// How long the build took. A runtime that limits how many builds run at
+	// once measures it from when its build starts, so the wait for a free slot
+	// isn't counted; for the others it's the whole build.
+	Duration time.Duration `json:"-"`
+}
+
+// BuildEvent says a function was built for a deploy. In sst dev the function
+// loop says it with its own event.
+type BuildEvent struct {
+	FunctionID string
+	Handler    string
+	Duration   time.Duration
 }
 
 type RunInput struct {
@@ -144,9 +157,13 @@ func (c *Collection) Build(ctx context.Context, input *BuildInput) (*BuildOutput
 		if !ok {
 			return nil, fmt.Errorf("Runtime not found: %v", input.Runtime)
 		}
+		start := time.Now()
 		result, err = runtime.Build(ctx, input)
 		if err != nil {
 			return nil, err
+		}
+		if result.Duration == 0 {
+			result.Duration = time.Since(start)
 		}
 	}
 

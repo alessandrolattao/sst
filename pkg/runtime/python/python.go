@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sst/sst/v3/pkg/flag"
 	"github.com/sst/sst/v3/pkg/process"
@@ -75,6 +76,8 @@ func (r *PythonRuntime) Build(ctx context.Context, input *runtime.BuildInput) (*
 
 	r.concurrency.Acquire(ctx, 1)
 	defer r.concurrency.Release(1)
+	// after the wait for a free slot, so the build's Duration is the build's
+	start := time.Now()
 
 	_, err := resolveHandler(path.ResolveRootDir(input.CfgPath), input.Handler)
 	if err != nil {
@@ -85,6 +88,7 @@ func (r *PythonRuntime) Build(ctx context.Context, input *runtime.BuildInput) (*
 	if err != nil {
 		return nil, err
 	}
+	result.Duration = time.Since(start)
 
 	return result, nil
 }

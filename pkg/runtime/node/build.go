@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	esbuild "github.com/evanw/esbuild/pkg/api"
 	"github.com/sst/sst/v3/internal/fs"
@@ -37,6 +38,8 @@ func (r *Runtime) Build(ctx context.Context, input *runtime.BuildInput) (*runtim
 
 	r.concurrency.Acquire(ctx, 1)
 	defer r.concurrency.Release(1)
+	// after the wait for a free slot, so the build's Duration is the build's
+	start := time.Now()
 	var properties NodeProperties
 	json.Unmarshal(input.Properties, &properties)
 
@@ -325,6 +328,7 @@ func (r *Runtime) Build(ctx context.Context, input *runtime.BuildInput) (*runtim
 		Handler:    handler,
 		Errors:     errors,
 		Sourcemaps: sourcemaps,
+		Duration:   time.Since(start),
 	}, nil
 }
 

@@ -106,8 +106,8 @@ func (r *Runtime) Build(ctx context.Context, input *runtime.BuildInput) (*runtim
 		return nil, err
 	}
 	defer r.concurrency.Release(1)
-	// After the semaphore: what gets reported is the compile, not the wait for
-	// a slot behind a few hundred other handlers.
+	// After the semaphore: the Duration this reports is the compile, not the
+	// wait for a slot behind a few hundred other handlers.
 	start := time.Now()
 
 	var properties Properties
@@ -199,13 +199,12 @@ func (r *Runtime) Build(ctx context.Context, input *runtime.BuildInput) (*runtim
 		)
 	}
 
-	reportBuilt(input.Handler, time.Since(start))
-
 	return &runtime.BuildOutput{
 		Handler:    "bootstrap",
 		Sourcemaps: []string{},
 		Errors:     []string{},
 		Out:        root,
+		Duration:   time.Since(start),
 	}, nil
 }
 

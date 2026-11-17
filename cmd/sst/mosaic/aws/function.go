@@ -55,6 +55,7 @@ type FunctionErrorEvent struct {
 type FunctionBuildEvent struct {
 	FunctionID string
 	Errors     []string
+	Duration   time.Duration
 }
 
 type FunctionLogEvent struct {
@@ -496,6 +497,7 @@ func function(ctx context.Context, input input) {
 			bus.Publish(&FunctionBuildEvent{
 				FunctionID: functionID,
 				Errors:     build.Errors,
+				Duration:   build.Duration,
 			})
 		} else {
 			bus.Publish(&FunctionBuildEvent{

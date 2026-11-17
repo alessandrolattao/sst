@@ -22,6 +22,7 @@ import (
 	"github.com/sst/sst/v3/cmd/sst/mosaic/ui/common"
 	"github.com/sst/sst/v3/pkg/flag"
 	"github.com/sst/sst/v3/pkg/project"
+	"github.com/sst/sst/v3/pkg/runtime"
 	"github.com/sst/sst/v3/pkg/types/typescript"
 
 	"golang.org/x/crypto/ssh/terminal"
@@ -245,7 +246,10 @@ func (u *UI) Event(unknown interface{}) {
 			}
 			return
 		}
-		u.printEvent(TEXT_SUCCESS, "Build", u.functionName(evt.FunctionID))
+		u.printEvent(TEXT_SUCCESS, "Build", withDuration(u.functionName(evt.FunctionID), evt.Duration))
+
+	case *runtime.BuildEvent:
+		u.printEvent(TEXT_SUCCESS, "Build", withDuration(strings.TrimPrefix(evt.Handler, "./"), evt.Duration))
 
 	case *aws.FunctionErrorEvent:
 		if !u.matchFilter(evt.FunctionID) {
@@ -684,11 +688,16 @@ func (u *UI) functionName(functionID string) string {
 }
 
 func (u *UI) printProgress(barColor lipgloss.Style, label string, duration time.Duration, urn string) {
-	message := u.FormatURN(urn)
+	u.printEvent(barColor, label, withDuration(u.FormatURN(urn), duration))
+}
+
+// withDuration adds how long a step took to its message, when it took more
+// than a second.
+func withDuration(message string, duration time.Duration) string {
 	if duration > time.Second {
 		message += fmt.Sprintf(" (%.1fs)", duration.Seconds())
 	}
-	u.printEvent(barColor, label, message)
+	return message
 }
 
 func (u *UI) printEvent(barColor lipgloss.Style, label string, message ...string) {

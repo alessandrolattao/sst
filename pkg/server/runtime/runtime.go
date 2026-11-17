@@ -19,6 +19,13 @@ func (r *Runtime) Build(input *runtime.BuildInput, output *runtime.BuildOutput) 
 	if err != nil {
 		return err
 	}
+	if len(result.Errors) == 0 {
+		bus.Publish(&runtime.BuildEvent{
+			FunctionID: input.FunctionID,
+			Handler:    input.Handler,
+			Duration:   result.Duration,
+		})
+	}
 	*output = *result
 	return nil
 }
