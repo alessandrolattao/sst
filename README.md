@@ -49,6 +49,17 @@ Everything SST does, it still does. The changes live entirely in the Go runtime 
 
 - **The state is half the size.** SST runs Pulumi against its local DIY backend, which rewrote the whole state as indented JSON after every resource it changed, while SST uploaded that same file to the state bucket during the deploy. Pulumi has written it compact since 3.238, and the fork is on Pulumi 3.270: on a test app with 40 components the state went from 164 KB to 82 KB. Pulumi's Node.js SDK now needs Node.js 22 or later.
 
+- **Pulumi can journal its steps, as it does with Pulumi Cloud.** Compact or not, that DIY backend still rewrites the whole state file after every resource it creates, updates or deletes, one write at a time, and on a large stack that write is what a deploy waits on: with a 53 MB state (11,000 resources) every step costs about two seconds on a CI runner, however fast the cloud answered, and Pulumi's parallel workers all queue behind it. Pulumi Cloud is spared because the CLI sends it one small journal entry per step instead, over its public HTTP API. Set `SST_PULUMI_JOURNALING=true` and SST serves that API itself, on `127.0.0.1`, for each `deploy`, `refresh` and `remove`, every call as [Pulumi's published OpenAPI spec](https://api.pulumi.com/api/openapi/pulumi-spec.json) defines it. Pulumi journals, the entries are applied with Pulumi's own replayer, and the state file is rebuilt from them right before each push to the state bucket, so what lands there, and when, is what landed there before. Rebuilding that 53 MB state takes 0.7s, once per push rather than once per step; on a 1,000-resource stack, replacing 50 resources went from 45s to 11s. Nothing leaves the machine, there is no Pulumi Cloud account or token, and the secrets stay encrypted with SST's passphrase. `sst diff` keeps the DIY backend. The deploy output says what the backend does and how long each part took, and `sst dev` gives it a pane of its own, under SST:
+
+  ```
+  |  Journal     saved 11003 resources, 53.2 MB, after 22008 entries (build 0.05s, encode 0.62s, write 0.03s)
+  |  Journal     succeeded: 22008 entries in 506 batches, applied in 1.15s; 1 save in 0.70s, slowest 0.70s
+  ```
+
+  It is opt-in while it proves itself on real deploys.
+
+- **An interrupted deploy pushes its state at once.** On Ctrl+C or SIGTERM, SST interrupts Pulumi and waits for it to exit, which can take minutes while it finishes what is in flight, but it stopped pushing the state at the interrupt: whatever killed the process next, like a CI runner that gives it about ten seconds, left the bucket with the state from before. The interrupt now pushes the state right away, and pushes go on until Pulumi has exited.
+
 - **Smaller fixes.** Resolving `GOMODCACHE` is cancellable instead of outliving a Ctrl-C, `go list` output is decoded through explicit JSON tags, and an unparsable concurrency value warns and keeps the default instead of quietly falling back to serial builds.
 
 ## What it costs
