@@ -18,6 +18,8 @@ type PulumiWorkdir struct {
 	path       string
 	project    *Project
 	lastPushed uint64
+	// beforePush writes the state file before a partial push reads it.
+	beforePush func() error
 }
 
 func (p *Project) NewWorkdir(id string) (*PulumiWorkdir, error) {
@@ -40,6 +42,11 @@ func (w *PulumiWorkdir) Cleanup() {
 }
 
 func (w *PulumiWorkdir) PushPartial(updateID string) error {
+	if w.beforePush != nil {
+		if err := w.beforePush(); err != nil {
+			return err
+		}
+	}
 	statePath := w.state()
 	data, err := os.ReadFile(statePath)
 	if err != nil {

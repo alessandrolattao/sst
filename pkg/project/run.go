@@ -23,6 +23,7 @@ import (
 	"github.com/sst/sst/v3/pkg/flag"
 	"github.com/sst/sst/v3/pkg/global"
 	"github.com/sst/sst/v3/pkg/id"
+	"github.com/sst/sst/v3/pkg/journal"
 	"github.com/sst/sst/v3/pkg/js"
 	"github.com/sst/sst/v3/pkg/process"
 	"github.com/sst/sst/v3/pkg/project/provider"
@@ -274,6 +275,18 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 	)
 	if input.ServerPort != 0 {
 		env = append(env, "SST_SERVER=http://127.0.0.1:"+fmt.Sprint(input.ServerPort))
+	}
+	// Pulumi journals its steps instead of rewriting the state file: pkg/journal.
+	var journaled *journal.Server
+	if flag.SST_PULUMI_JOURNALING && input.Command != "diff" {
+		journaled, err = journal.Start(journal.Options{StatePath: workdir.state(), Org: "organization",
+			Project: p.app.Name, Stack: p.app.Stage, Dir: workdir.Backend(), Dev: input.Dev})
+		if err != nil {
+			return err
+		}
+		defer journaled.Close()
+		workdir.beforePush = journaled.Save
+		env = append(env, journaled.Env()...)
 	}
 	pulumiPath := global.PulumiPath()
 	if flag.SST_PULUMI_PATH != "" {
@@ -629,6 +642,9 @@ loop:
 		}
 	}
 
+	if journaled != nil {
+		journaled.Close()
+	}
 	log.Info("parsing state")
 	complete, err := getCompletedEvent(context.Background(), passphrase, workdir)
 	if err != nil {
