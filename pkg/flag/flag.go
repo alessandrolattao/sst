@@ -43,6 +43,7 @@ var SST_DEV_CLOUDWATCH_LOGS = isTrue("SST_DEV_CLOUDWATCH_LOGS")
 var SST_DEV_HTTP_PUBLISH = isTrue("SST_DEV_HTTP_PUBLISH")
 
 var SST_NO_BUN = isTrue("NO_BUN") || isTrue("SST_NO_BUN")
+var SST_PULUMI_JOURNALING = isTrue("SST_PULUMI_JOURNALING")
 
 func isTrue(name string) bool {
 	val, ok := os.LookupEnv(name)
