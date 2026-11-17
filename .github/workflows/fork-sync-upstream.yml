@@ -1,0 +1,313 @@
+name: Fork Sync Upstream
+
+# Watches upstream SST and, when it ships a new release, rebases this fork's
+# patches onto it and publishes a matching build.
+#
+# Upstream is the community-maintained fork, sst-community/sst: anomalyco/sst
+# has merged nothing but CI changes since October 2026. Only its stable 4.x
+# release tags are followed, never its main branch, which carries unreleased
+# work, and never a pre-release or another major line: moving to one of those
+# is a decision, not a sync.
+#
+# There is no way for upstream to notify us, so this polls. Daily is plenty:
+# the point is not to be fast, it is to not silently drift months behind.
+#
+# The rebase is the part that can genuinely fail. When it does, this stops and
+# opens an issue rather than publishing something nobody looked at: a conflict
+# means upstream changed code a patch depends on, which is exactly the case
+# that wants a human.
+#
+# Note what this workflow implies: upstream's code is fetched, rebased under,
+# built, tested and published to npm under the maintainer's scope, with no
+# human in between. The `npm-publish` environment in fork-publish.yml is where
+# a required reviewer belongs if that trade is not acceptable.
+on:
+  schedule:
+    # 05:00 UTC, after upstream's usual release hours.
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+# A manual dispatch landing on top of the scheduled run would rebase and
+# force-push twice, and race on the version counter.
+concurrency:
+  group: fork-sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Rebase onto upstream
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      updated: ${{ steps.check.outputs.updated }}
+      upstream_tag: ${{ steps.check.outputs.upstream_tag }}
+      sha: ${{ steps.resolved.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: alessandrolattao
+          # The token is NOT left in .git/config: the steps below run upstream's
+          # code (its build and its tests) on this runner, and that code should
+          # not find a repo-write credential sitting on disk. The push at the
+          # end supplies it explicitly instead.
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.9"
+
+      # Needed by platform/scripts/build in the verification step below.
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Check upstream for a new release
+        id: check
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/sst-community/sst.git
+          git fetch upstream --tags --quiet
+
+          # The newest stable release of the 4.x line: v4.X.Y, no suffix.
+          release=$(git tag --list 'v4.*' --sort=-v:refname | grep -E '^v4\.[0-9]+\.[0-9]+$' | head -1)
+          if [ -z "$release" ]; then
+            echo "no stable 4.x release tag upstream" >&2
+            exit 1
+          fi
+          upstream_head=$(git rev-parse "$release^{commit}")
+          upstream_tag=${release#v}
+          local_base=$(git merge-base HEAD "$upstream_head")
+          published=$(npm view "@alessandrolattao/sst" commit 2>/dev/null || echo "")
+
+          echo "upstream_tag=$upstream_tag" >> "$GITHUB_OUTPUT"
+          echo "upstream_head=$upstream_head" >> "$GITHUB_OUTPUT"
+
+          # Two separate questions. Rebasing is only needed when upstream moved,
+          # but publishing is needed whenever the branch head is not what is on
+          # npm -- which is the case after someone resolves a conflict by hand,
+          # or after a publish that failed on its own. Asking only the first
+          # question means those never ship.
+          if [ "$local_base" != "$upstream_head" ]; then
+            echo "upstream moved to $upstream_tag ($upstream_head)"
+            echo "rebase=true" >> "$GITHUB_OUTPUT"
+            echo "updated=true" >> "$GITHUB_OUTPUT"
+          elif [ "$published" != "$(git rev-parse HEAD)" ]; then
+            echo "on upstream $upstream_tag already, but HEAD ($(git rev-parse HEAD)) is not the published commit (${published:-none})"
+            echo "rebase=false" >> "$GITHUB_OUTPUT"
+            echo "updated=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "on upstream $upstream_tag and HEAD is published, nothing to do"
+            echo "rebase=false" >> "$GITHUB_OUTPUT"
+            echo "updated=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rebase the fork onto the new upstream
+        if: steps.check.outputs.rebase == 'true'
+        id: rebase
+        env:
+          UPSTREAM_HEAD: ${{ steps.check.outputs.upstream_head }}
+        run: |
+          set -euo pipefail
+          git branch "backup/pre-sync-$(date -u +%Y%m%dT%H%M%SZ)" alessandrolattao
+          # The checkout above creates only the branch it was asked for, so
+          # `dev` exists solely as origin/dev. Created explicitly, because a
+          # bare `git checkout dev` cannot guess it either: with upstream/dev
+          # fetched too, the name matches two remotes and git refuses.
+          git branch dev origin/dev
+          old_dev=$(git rev-parse dev)
+          old_head=$(git rev-parse alessandrolattao)
+
+          git checkout dev
+          git merge --ff-only "$UPSTREAM_HEAD"
+
+          # The feat/* branches are stacked inside this history, one per patch,
+          # and they are what a PR to upstream would be cut from. Point them at
+          # their remote state first so --update-refs can carry them along:
+          # left behind, they would rot on an upstream that is months old while
+          # the published branch moves on.
+          for branch in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin/feat); do
+            git branch -f "${branch#origin/}" "$branch"
+          done
+
+          git checkout alessandrolattao
+          before=$(git rev-list --count dev..HEAD)
+          if ! git rebase --update-refs dev; then
+            # Collect the evidence before throwing it away: without this the
+            # issue can only say "something failed".
+            {
+              echo "### Conflicting files"
+              git diff --name-only --diff-filter=U | sed 's/^/- /'
+              echo
+              echo "### While applying"
+              git log -1 --oneline REBASE_HEAD 2>/dev/null || true
+            } >> "$GITHUB_STEP_SUMMARY"
+            git rebase --abort || true
+            exit 1
+          fi
+          after=$(git rev-list --count dev..HEAD)
+
+          # A rebase silently drops commits whose patch-id upstream already
+          # carries. That is sometimes correct (a patch was merged upstream)
+          # and sometimes the fork losing its reason to exist, so it stops here
+          # for a human either way.
+          if [ "$after" -ne "$before" ]; then
+            echo "rebase went from $before patches to $after; stopping so someone can look" >&2
+            exit 1
+          fi
+
+          # What changed in the patches themselves, beyond being shifted onto
+          # new context. A conflict resolved differently than last time shows up
+          # here even when the build and the tests stay green.
+          {
+            echo "### Patches before and after the rebase"
+            echo '```'
+            git range-diff "$old_dev..$old_head" "dev..HEAD" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the tree still builds and passes
+        if: steps.check.outputs.updated == 'true'
+        run: |
+          set -euo pipefail
+          # platform/dist is //go:embed-ed into the CLI, so nothing compiles
+          # without it. Under `bash -e` because that script has none of its own.
+          bun install --frozen-lockfile
+          bash -e platform/scripts/build
+          go build ./cmd/sst
+          # Scoped to what the patches touch, like the publish workflow: the
+          # wider `./...` drags in the python runtime's `uv`-dependent tests.
+          go test -race ./pkg/runtime/golang/... ./cmd/sst/mosaic/ui/... ./pkg/journal/... ./pkg/project/
+        env:
+          DOCKER_PUSH: false
+
+      - name: Resolve the commit to publish
+        id: resolved
+        if: steps.check.outputs.updated == 'true'
+        # Set in both paths: with a rebase this is its result, without one it is
+        # the branch head that is not on npm yet. The publish job checks this
+        # out explicitly rather than resolving a branch name later.
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Push
+        if: steps.check.outputs.updated == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REBASED: ${{ steps.check.outputs.rebase }}
+        run: |
+          set -euo pipefail
+          # Supplied here rather than persisted at checkout, so it exists only
+          # for this step and not while upstream's code was running.
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          # Deliberately no `git push origin --tags`. The publish job fetches
+          # upstream's tags directly, and mirroring them here would arm
+          # release.yml, inherited from upstream and triggered by
+          # `push: tags: ["*"]`, turning every upstream release into a run of
+          # THEIR release pipeline on this fork.
+          if [ "$REBASED" = "true" ]; then
+            git push origin dev
+            git push origin "refs/heads/backup/*"
+            # Force is expected: a rebase rewrites these commits by definition.
+            # --force-with-lease so a push that raced with this one is not lost.
+            git push --force-with-lease origin alessandrolattao
+            # The patch branches ride along via --update-refs.
+            git push --force-with-lease origin "refs/heads/feat/*"
+          fi
+
+  notify:
+    name: Report a failed sync
+    needs: [sync, publish]
+    # `always()` rather than `failure()` alone: a failure in the check step
+    # leaves `updated` empty, and a sync that fails silently is the worst
+    # outcome for an unattended job.
+    #
+    # Both jobs, not just the rebase. Publishing is where a release actually
+    # reaches npm, and a publish that dies leaves the branch moved on with
+    # nothing shipped: the same silence this job exists to break, and it once
+    # went unnoticed for eleven days. A skipped job's result is `skipped` and
+    # never `failure`, so the ordinary "nothing to release" run stays quiet.
+    if: always() && (needs.sync.result == 'failure' || needs.publish.result == 'failure')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open an issue, unless one is already open
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          UPSTREAM_TAG: ${{ needs.sync.outputs.upstream_tag }}
+          SYNC_RESULT: ${{ needs.sync.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # A conflicted rebase and a rejected npm publish share nothing but
+          # the outcome, so the issue says which one happened and what to read.
+          # `sync` is asked first: when it fails, `publish` never ran at all.
+          if [ "$SYNC_RESULT" = "failure" ]; then
+            stage="Rebase"
+            body="Rebasing \`alessandrolattao\` onto upstream \`${UPSTREAM_TAG:-unknown}\` did not go through unattended, so nothing was published.
+
+          One of: a patch conflicted, the rebase dropped a patch upstream now carries, or the rebased tree stopped building or passing. All three mean upstream touched code a patch depends on, which is worth reading rather than resolving mechanically.
+
+          The branch as it was before the attempt is pushed as \`backup/pre-sync-*\`.
+
+          To pick it up locally:
+
+          \`\`\`bash
+          git fetch upstream --tags
+          git checkout dev && git merge --ff-only v${UPSTREAM_TAG:-<release>}
+          git checkout alessandrolattao && git rebase dev
+          \`\`\`"
+          else
+            stage="Publish"
+            body="The tree is on upstream \`${UPSTREAM_TAG:-unknown}\`, it built and it passed, but publishing it to npm failed. The branch has moved on with nothing shipped.
+
+          Worth checking first, because it is invisible from the build logs: npm's trusted publishing validates the CALLING workflow's filename, which on this path is \`fork-sync-upstream.yml\` and not the \`fork-publish.yml\` that holds the \`npm publish\`. Registered on only one of the two, npm rejects the OIDC token, falls back to anonymous, and answers \`404 Not Found\` on the \`PUT\` -- which reads like a missing package rather than a refused credential.
+
+          Nothing to undo before retrying: versions are immutable per package, and the script skips what is already published, so the next run resumes where this one stopped."
+          fi
+
+          # Without this the daily schedule files the same issue every morning
+          # until someone acts on it.
+          number=$(gh issue list --state open --search 'in:title Sync onto upstream' --json number --jq '.[0].number')
+          if [ -n "$number" ]; then
+            echo "an upstream sync issue is already open, commenting instead"
+            gh issue comment "$number" --body "$stage failed again: $RUN_URL"
+            exit 0
+          fi
+
+          gh issue create \
+            --title "Sync onto upstream ${UPSTREAM_TAG:-unknown} needs a hand" \
+            --body "$body
+
+          Run: $RUN_URL"
+
+  publish:
+    name: Publish the rebased build
+    needs: sync
+    if: needs.sync.outputs.updated == 'true'
+    uses: ./.github/workflows/fork-publish.yml
+    # The exact commit the rebase produced and the tests passed on, not
+    # whatever the branch head resolves to later.
+    with:
+      sha: ${{ needs.sync.outputs.sha }}
+    permissions:
+      id-token: write
+      contents: read
