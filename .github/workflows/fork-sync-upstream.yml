@@ -192,7 +192,7 @@ jobs:
           go build ./cmd/sst
           # Scoped to what the patches touch, like the publish workflow: the
           # wider `./...` drags in the python runtime's `uv`-dependent tests.
-          go test -race ./pkg/runtime/golang/... ./cmd/sst/mosaic/ui/... ./pkg/journal/... ./pkg/project/
+          go test -race ./pkg/runtime/ ./pkg/runtime/golang/... ./pkg/runtime/node/... ./cmd/sst/mosaic/ui/... ./pkg/journal/... ./pkg/project/
         env:
           DOCKER_PUSH: false
 
