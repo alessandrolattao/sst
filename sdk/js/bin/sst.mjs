@@ -16,7 +16,10 @@ if (!resolved) {
     resolved = require.resolve(`${name}/bin/${binary}`);
   } catch (ex) {
     console.error(
-      `It seems that your package manager failed to install the right version of the SST CLI for your platform. You can try manually installing the "${name}" package.`,
+      `No "${name}" package: this fork builds for Linux (x64, arm64) and macOS (arm64, x64).\n\n` +
+        `On any other platform, build the CLI from https://github.com/alessandrolattao/sst and point SST_BIN_PATH at it:\n` +
+        `  go build -o /tmp/sst ./cmd/sst && SST_BIN_PATH=/tmp/sst npx sst <command>\n\n` +
+        `Upstream's "sst" package covers every platform and behaves the same, minus the Go build changes.`,
     );
     process.exit(1);
   }
