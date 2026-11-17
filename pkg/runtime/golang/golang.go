@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -276,14 +275,33 @@ type capturedDeps struct {
 }
 
 func (r *Runtime) captureDeps(ctx context.Context, root, src string, env []string) (capturedDeps, error) {
-	cmd := exec.CommandContext(ctx, "go", "list", "-deps", "-json", "./"+src)
+	gomodcache := r.resolveGoModCache(ctx, env)
+	cmd := process.CommandContext(ctx, "go", "list", "-deps", "-json", "./"+src)
 	cmd.Dir = root
 	cmd.Env = env
-	out, err := cmd.Output()
+	// Read as it comes rather than collected with Output: the process package
+	// keeps every command it starts, and with it whatever buffer the command
+	// wrote into, and this output is megabytes for a handler with many deps.
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return capturedDeps{}, err
 	}
-	return parseGoListOutput(strings.NewReader(string(out)), r.resolveGoModCache(ctx, env))
+	if err := cmd.Start(); err != nil {
+		return capturedDeps{}, err
+	}
+	deps, parseErr := parseGoListOutput(stdout, gomodcache)
+	if parseErr != nil {
+		// nothing reads the rest, so stop it rather than wait on a full pipe
+		process.Kill(cmd.Process)
+	}
+	waitErr := cmd.Wait()
+	if parseErr != nil {
+		return capturedDeps{}, parseErr
+	}
+	if waitErr != nil {
+		return capturedDeps{}, waitErr
+	}
+	return deps, nil
 }
 
 func parseGoListOutput(r io.Reader, gomodcache string) (capturedDeps, error) {
@@ -337,7 +355,7 @@ func (r *Runtime) resolveGoModCache(ctx context.Context, env []string) string {
 	if r.gomodcacheResolved {
 		return r.gomodcache
 	}
-	cmd := exec.CommandContext(ctx, "go", "env", "GOMODCACHE")
+	cmd := process.CommandContext(ctx, "go", "env", "GOMODCACHE")
 	cmd.Env = env
 	out, err := cmd.Output()
 	if err != nil {
