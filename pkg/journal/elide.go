@@ -23,8 +23,9 @@ import (
 //
 // So the decision is made again here, from what the entries carry: a step that
 // began without a pending operation, and ended with a resource equal to the
-// one it replaces, ciphertexts and the fields mustWrite ignores aside. Skipped
-// entries are still applied: only the save waits for one that changes
+// one it replaces, ciphertexts and the fields mustWrite ignores aside; and
+// outputs registered again equal to the ones there, with no secret among them.
+// Skipped entries are still applied: only the save waits for one that changes
 // something, or for the end of the update.
 type elision struct {
 	// base is the deployment the update starts from: RemoveOld indexes it.
@@ -70,8 +71,12 @@ func (e *elision) unchanged(entry apitype.JournalEntry) bool {
 		if entry.State == nil {
 			return false
 		}
+		// Registered outputs are the program's to change, secrets included, and
+		// a changed secret looks like any other one here: Pulumi compares them in
+		// plaintext. Outputs with a secret are always saved.
 		old := e.previous(entry)
-		return old != nil && sameResource(old, entry.State)
+		return old != nil && !hasSecret(old.Outputs) && !hasSecret(entry.State.Outputs) &&
+			sameResource(old, entry.State)
 	case apitype.JournalEntryKindSecretsManager:
 		// The replayer keeps the base's own when it is the same one.
 		current, next := e.base.SecretsProviders, entry.SecretsProvider
@@ -130,10 +135,11 @@ var ignoredFields = []string{"initErrors", "sourcePosition", "stackTrace", "crea
 
 // sameResource compares two resource states as mustWrite does, except that
 // any two secrets count as equal: their ciphertexts differ on every
-// encryption, and the plaintext is not at hand. Inputs and outputs are the only
-// places secrets live, and a `same` step keeps its old outputs, so the only
-// change this misses is a secret input the provider ignored. It is written by
-// the next save that is not skipped, at the latest when the update ends.
+// encryption, and the plaintext is not at hand. A `same` step keeps its old
+// outputs, and registered outputs with a secret are never skipped (see
+// unchanged), so the only change this misses is a `same` step's secret input
+// the provider found no difference in. It is written by the next save that is
+// not skipped, at the latest when the update ends.
 func sameResource(a, b *apitype.ResourceV3) bool {
 	na, okA := normalized(a)
 	nb, okB := normalized(b)
@@ -173,12 +179,16 @@ func normalized(r *apitype.ResourceV3) (map[string]any, bool) {
 	return m, true
 }
 
+// secretMarker stands for a secret in a normalized resource. It is a type of
+// its own so that no value decoded from JSON can be equal to it.
+type secretMarker struct{}
+
 // withoutCiphertexts replaces every secret with the same marker.
 func withoutCiphertexts(v any) any {
 	switch v := v.(type) {
 	case map[string]any:
 		if v[resource.SigKey] == resource.SecretSig {
-			return "secret"
+			return secretMarker{}
 		}
 		for k, item := range v {
 			v[k] = withoutCiphertexts(item)
@@ -191,4 +201,26 @@ func withoutCiphertexts(v any) any {
 		return v
 	}
 	return v
+}
+
+// hasSecret reports whether a property map holds a secret anywhere.
+func hasSecret(v any) bool {
+	switch v := v.(type) {
+	case map[string]any:
+		if v[resource.SigKey] == resource.SecretSig {
+			return true
+		}
+		for _, item := range v {
+			if hasSecret(item) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range v {
+			if hasSecret(item) {
+				return true
+			}
+		}
+	}
+	return false
 }

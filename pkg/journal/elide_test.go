@@ -3,6 +3,7 @@ package journal
 import (
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -170,5 +171,84 @@ func TestKilobytes(t *testing.T) {
 		if got := kilobytes(n); got != want {
 			t.Errorf("kilobytes(%d) = %q, want %q", n, got, want)
 		}
+	}
+}
+
+// A plain value that happens to read "secret" is not a secret.
+func TestASecretIsNotAPlainValue(t *testing.T) {
+	asSecret := resourceWith(map[string]any{"mode": secret("v1:aaa:111")})
+	asText := resourceWith(map[string]any{"mode": "secret"})
+	if sameResource(asSecret, asText) || sameResource(asText, asSecret) {
+		t.Error("a secret output equals the plain string \"secret\"")
+	}
+	in := *asSecret
+	in.Inputs = map[string]any{"mode": secret("v1:aaa:111")}
+	plain := *asSecret
+	plain.Inputs = map[string]any{"mode": "secret"}
+	if sameResource(&in, &plain) {
+		t.Error("a secret input equals the plain string \"secret\"")
+	}
+}
+
+// Registered outputs are skipped only when equal and free of secrets: a
+// secret among them may have changed under a new ciphertext.
+func TestRegisteredOutputsWithASecretAreSaved(t *testing.T) {
+	outputs := func(v any) *apitype.ResourceV3 {
+		return &apitype.ResourceV3{
+			URN:     "urn:pulumi:dev::bench::pulumi:pulumi:Stack::bench-dev",
+			Type:    "pulumi:pulumi:Stack",
+			Outputs: map[string]any{"value": v},
+		}
+	}
+	index := int64(0)
+	cases := []struct {
+		name      string
+		base, now any
+		want      bool
+	}{
+		{"plain and the same", "a", "a", true},
+		{"plain and changed", "a", "b", false},
+		{"a secret, encrypted again", secret("v1:aaa:111"), secret("v1:bbb:222"), false},
+		{"a secret in a list", []any{"a", secret("v1:aaa:111")}, []any{"a", secret("v1:aaa:111")}, false},
+	}
+	for _, c := range cases {
+		e := newElision(&apitype.DeploymentV3{Resources: []apitype.ResourceV3{*outputs(c.base)}})
+		entry := apitype.JournalEntry{Kind: apitype.JournalEntryKindOutputs, OperationID: 1, RemoveOld: &index, State: outputs(c.now)}
+		if got := e.unchanged(entry); got != c.want {
+			t.Errorf("%s: unchanged = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// A secret stack output that changes is saved as soon as it is registered,
+// not only when the update ends.
+func TestAChangedSecretStackOutputIsNotSkipped(t *testing.T) {
+	cli, env := pulumiEnv(t)
+	dir := t.TempDir()
+	diy := slices.Concat(env, []string{"PULUMI_BACKEND_URL=file://" + dir})
+	write := func(value string) {
+		t.Helper()
+		yaml := "name: bench\nruntime: yaml\nresources:\n" +
+			"  r0:\n    type: random:RandomString\n    properties:\n      length: 8\n    options:\n      version: 4.21.4\n" +
+			"outputs:\n  secretOut:\n    fn::secret: " + value + "\n"
+		if err := os.WriteFile(dir+"/Pulumi.yaml", []byte(yaml), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("s1")
+	run(t, dir, cli, diy, "stack", "init", "organization/bench/dev")
+	up(t, dir, cli, env)
+	if err := os.Remove(dir + "/Pulumi.dev.yaml"); err != nil {
+		t.Fatal(err)
+	}
+
+	write("s2")
+	server := up(t, dir, cli, env)
+	if server.stats.skipped >= server.stats.entries {
+		t.Errorf("skipped %d of %d entries, the changed secret output among them", server.stats.skipped, server.stats.entries)
+	}
+	got := run(t, dir, cli, diy, "stack", "output", "secretOut", "--show-secrets", "--non-interactive", "--stack", "organization/bench/dev")
+	if strings.TrimSpace(got) != "s2" {
+		t.Errorf("secretOut = %q, want s2", strings.TrimSpace(got))
 	}
 }
