@@ -1004,11 +1004,15 @@ export class WebFunction extends Component implements Link.Linkable {
             });
           archive.finalize().catch(reject);
         });
+        // Hashed through a Uint8Array view of the same bytes, as in Function:
+        // when the app's lib and a nested @types/node disagree on Buffer's
+        // iterators, a Buffer is not a BinaryLike.
+        const zip = await fs.promises.readFile(zipPath);
         return {
           path: zipPath,
           hash: crypto
             .createHash("sha256")
-            .update(await fs.promises.readFile(zipPath))
+            .update(new Uint8Array(zip.buffer, zip.byteOffset, zip.byteLength))
             .digest("hex"),
           entrypoint,
         };
