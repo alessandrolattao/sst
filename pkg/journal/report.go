@@ -24,8 +24,18 @@ func seconds(d time.Duration) string {
 	return fmt.Sprintf("%.2fs", d.Seconds())
 }
 
-func megabytes(n int) string {
-	return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+// kilobytes keeps the size precise enough to see a save change it.
+func kilobytes(n int) string {
+	kb := (n + 512) / 1024
+	digits := fmt.Sprint(kb)
+	var out []byte
+	for i := range len(digits) {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, digits[i])
+	}
+	return string(out) + " KB"
 }
 
 func count(n int, one, many string) string {

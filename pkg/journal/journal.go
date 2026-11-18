@@ -90,8 +90,10 @@ type stats struct {
 	events   int
 	skipped  int
 	saves    int
-	saving   time.Duration
-	slowest  time.Duration
+	// savedAt is how many entries the last save had.
+	savedAt int
+	saving  time.Duration
+	slowest time.Duration
 }
 
 // Start reads the state and starts serving it.
@@ -194,7 +196,8 @@ func (s *Server) save(final bool) error {
 		s.mu.Unlock()
 		return nil
 	}
-	entries := s.stats.entries
+	entries, since := s.stats.entries, s.stats.entries-s.stats.savedAt
+	s.stats.savedAt = entries
 	start := time.Now()
 	deployment, err := s.replayer.GenerateDeployment()
 	s.dirty, s.elided = false, false
@@ -225,10 +228,10 @@ func (s *Server) save(final bool) error {
 
 	resources := len(deployment.Deployment.Resources)
 	s.log.Info("state saved",
-		"entries", entries, "resources", resources, "bytes", s.buf.Len(),
+		"entries", entries, "new", since, "resources", resources, "bytes", s.buf.Len(),
 		"build", built.Sub(start), "encode", encoded.Sub(built), "write", written.Sub(encoded))
-	s.report.printf("saved %d resources, %s, after %d entries (build %s, encode %s, write %s)",
-		resources, megabytes(s.buf.Len()), entries,
+	s.report.printf("saved %d resources, %s, after %d entries, %d new (build %s, encode %s, write %s)",
+		resources, kilobytes(s.buf.Len()), entries, since,
 		seconds(built.Sub(start)), seconds(encoded.Sub(built)), seconds(written.Sub(encoded)))
 	return nil
 }
@@ -265,11 +268,11 @@ func (s *Server) close() {
 	s.mu.Unlock()
 	s.log.Info("backend stopped",
 		"status", status, "batches", st.batches, "entries", st.entries, "bytes", st.bytesIn,
-		"applying", st.applying, "events", st.events, "saves", st.saves, "saving", st.saving,
+		"applying", st.applying, "skipped", st.skipped, "events", st.events, "saves", st.saves, "saving", st.saving,
 		"slowest", st.slowest, "total", time.Since(s.start))
-	s.report.printf("%s: %s in %s, applied in %s; %s in %s, slowest %s",
+	s.report.printf("%s: %s in %s, applied in %s, %d left the state as it was; %s in %s, slowest %s",
 		status, count(st.entries, "entry", "entries"), count(st.batches, "batch", "batches"), seconds(st.applying),
-		count(st.saves, "save", "saves"), seconds(st.saving), seconds(st.slowest))
+		st.skipped, count(st.saves, "save", "saves"), seconds(st.saving), seconds(st.slowest))
 }
 
 func (s *Server) fail(err error) error {

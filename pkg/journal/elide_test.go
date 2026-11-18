@@ -163,3 +163,12 @@ func TestAChangeAmongUnchangedStepsSaves(t *testing.T) {
 	checkResources(t, dir, 200)
 	run(t, dir, cli, diy, "preview", "--expect-no-changes", "--non-interactive", "--stack", "organization/bench/dev")
 }
+
+func TestKilobytes(t *testing.T) {
+	cases := map[int]string{0: "0 KB", 1023: "1 KB", 34490369: "33,682 KB", 43194702: "42,182 KB", 1 << 30: "1,048,576 KB"}
+	for n, want := range cases {
+		if got := kilobytes(n); got != want {
+			t.Errorf("kilobytes(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
