@@ -63,13 +63,17 @@ type Server struct {
 	state    *state
 	replayer *backend.JournalReplayer
 	dirty    bool
-	failed   error
-	stats    stats
-	stackID  string
-	version  int
-	tags     map[apitype.StackTagName]string
-	updates  map[string]*update
-	latest   *update
+	// elided is set when entries that changed nothing came since the last
+	// save: only the final save writes them.
+	elided  bool
+	elide   *elision
+	failed  error
+	stats   stats
+	stackID string
+	version int
+	tags    map[apitype.StackTagName]string
+	updates map[string]*update
+	latest  *update
 
 	// saveMu lets one save run at a time, and owns buf.
 	saveMu sync.Mutex
@@ -84,6 +88,7 @@ type stats struct {
 	bytesIn  int64
 	applying time.Duration
 	events   int
+	skipped  int
 	saves    int
 	saving   time.Duration
 	slowest  time.Duration
@@ -110,6 +115,7 @@ func Start(opts Options) (*Server, error) {
 	}
 	s.state = st
 	s.replayer = backend.NewJournalReplayer(st.base)
+	s.elide = newElision(st.base)
 	took := time.Since(read)
 
 	s.token, err = newToken()
@@ -165,6 +171,16 @@ func (s *Server) Env() []string {
 // Save writes the state the journal has reached, if it moved since the last
 // save. SST calls it before every push.
 func (s *Server) Save() error {
+	return s.save(false)
+}
+
+// flush writes the state the journal has reached when the update ends, the
+// entries that changed nothing included, as Pulumi flushes its elided writes.
+func (s *Server) flush() error {
+	return s.save(true)
+}
+
+func (s *Server) save(final bool) error {
 	s.saveMu.Lock()
 	defer s.saveMu.Unlock()
 
@@ -174,14 +190,14 @@ func (s *Server) Save() error {
 		s.mu.Unlock()
 		return err
 	}
-	if !s.dirty {
+	if !s.dirty && !(final && s.elided) {
 		s.mu.Unlock()
 		return nil
 	}
 	entries := s.stats.entries
 	start := time.Now()
 	deployment, err := s.replayer.GenerateDeployment()
-	s.dirty = false
+	s.dirty, s.elided = false, false
 	s.mu.Unlock()
 	if err != nil {
 		return s.fail(fmt.Errorf("rebuilding the state: %w", err))
@@ -226,7 +242,7 @@ func (s *Server) Close() {
 }
 
 func (s *Server) close() {
-	if err := s.Save(); err != nil {
+	if err := s.flush(); err != nil {
 		s.log.Error("saving the state on close", "err", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

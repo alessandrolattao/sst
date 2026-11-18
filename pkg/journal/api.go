@@ -394,7 +394,7 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, u *update) {
 	s.log.Info("update completed", "update", u.id, "status", req.Status)
 	// The state is final: write it before Pulumi exits, since SST reads it as
 	// soon as Pulumi does.
-	if err := s.Save(); err != nil {
+	if err := s.flush(); err != nil {
 		s.error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -431,7 +431,7 @@ func (s *Server) journalEntries(w http.ResponseWriter, r *http.Request, u *updat
 		return
 	}
 	err := s.failed
-	repeated := 0
+	repeated, skipped, changed := 0, 0, false
 	for _, entry := range entries {
 		if err != nil {
 			break
@@ -440,13 +440,28 @@ func (s *Server) journalEntries(w http.ResponseWriter, r *http.Request, u *updat
 			repeated++
 			continue
 		}
+		unchanged := s.elide.unchanged(entry)
 		if err = s.replayer.Add(entry); err == nil {
 			u.applied[entry.SequenceID] = struct{}{}
+			s.elide.record(entry)
+			if unchanged {
+				skipped++
+			} else {
+				changed = true
+			}
 		}
 	}
 	applied := time.Now()
 	if err == nil {
-		s.dirty = true
+		// Entries that changed nothing are applied, but they do not make the
+		// state worth saving on their own: see elision.
+		if changed {
+			s.dirty = true
+		}
+		if skipped > 0 {
+			s.elided = true
+		}
+		s.stats.skipped += skipped
 		s.stats.batches++
 		s.stats.entries += len(entries) - repeated
 		s.stats.bytesIn += size
@@ -534,6 +549,7 @@ func (s *Server) replaceDeployment(w http.ResponseWriter, u *update, raw []byte,
 		u.verbatim = sequence
 	}
 	s.replayer = backend.NewJournalReplayer(deployment)
+	s.elide = newElision(deployment)
 	s.dirty = true
 	w.WriteHeader(http.StatusNoContent)
 }
