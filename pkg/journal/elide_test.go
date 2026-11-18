@@ -79,22 +79,15 @@ func saving(t *testing.T, dir, cli string, env []string) (*Server, int) {
 			case <-stop:
 				return
 			case <-time.After(20 * time.Millisecond):
-				server.mu.Lock()
-				before, finished := server.stats.saves, server.latest != nil && server.latest.status != apitype.StatusRunning
-				server.mu.Unlock()
-				if finished {
-					continue
-				}
-				if err := server.Save(); err != nil {
+				wrote, err := server.save(false)
+				if err != nil {
 					t.Error(err)
 				}
-				server.mu.Lock()
-				if server.stats.saves > before {
+				if wrote {
 					mu.Lock()
 					written++
 					mu.Unlock()
 				}
-				server.mu.Unlock()
 			}
 		}
 	}()

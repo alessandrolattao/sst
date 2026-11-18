@@ -65,15 +65,17 @@ type Server struct {
 	dirty    bool
 	// elided is set when entries that changed nothing came since the last
 	// save: only the final save writes them.
-	elided  bool
-	elide   *elision
-	failed  error
-	stats   stats
-	stackID string
-	version int
-	tags    map[apitype.StackTagName]string
-	updates map[string]*update
-	latest  *update
+	elided bool
+	elide  *elision
+	failed error
+	// closeErr is the final save's error, for Err.
+	closeErr error
+	stats    stats
+	stackID  string
+	version  int
+	tags     map[apitype.StackTagName]string
+	updates  map[string]*update
+	latest   *update
 
 	// saveMu lets one save run at a time, and owns buf.
 	saveMu sync.Mutex
@@ -173,16 +175,19 @@ func (s *Server) Env() []string {
 // Save writes the state the journal has reached, if it moved since the last
 // save. SST calls it before every push.
 func (s *Server) Save() error {
-	return s.save(false)
+	_, err := s.save(false)
+	return err
 }
 
 // flush writes the state the journal has reached when the update ends, the
 // entries that changed nothing included, as Pulumi flushes its elided writes.
 func (s *Server) flush() error {
-	return s.save(true)
+	_, err := s.save(true)
+	return err
 }
 
-func (s *Server) save(final bool) error {
+// save reports whether it wrote the state.
+func (s *Server) save(final bool) (bool, error) {
 	s.saveMu.Lock()
 	defer s.saveMu.Unlock()
 
@@ -190,20 +195,23 @@ func (s *Server) save(final bool) error {
 	if s.failed != nil {
 		err := s.failed
 		s.mu.Unlock()
-		return err
+		return false, err
 	}
 	if !s.dirty && !(final && s.elided) {
 		s.mu.Unlock()
-		return nil
+		return false, nil
 	}
 	entries, since := s.stats.entries, s.stats.entries-s.stats.savedAt
-	s.stats.savedAt = entries
 	start := time.Now()
-	deployment, err := s.replayer.GenerateDeployment()
+	var deployment apitype.TypedDeployment
+	err := guarded(func() (err error) {
+		deployment, err = s.replayer.GenerateDeployment()
+		return err
+	})
 	s.dirty, s.elided = false, false
 	s.mu.Unlock()
 	if err != nil {
-		return s.fail(fmt.Errorf("rebuilding the state: %w", err))
+		return false, s.fail(fmt.Errorf("rebuilding the state: %w", err))
 	}
 	built := time.Now()
 
@@ -211,16 +219,17 @@ func (s *Server) save(final bool) error {
 	// up by it. The deployment is a copy: the replayer changes its own
 	// resources, never the ones it handed out.
 	if err := s.state.encode(&s.buf, deployment); err != nil {
-		return s.fail(fmt.Errorf("encoding the state: %w", err))
+		return false, s.unsaved(fmt.Errorf("encoding the state: %w", err))
 	}
 	encoded := time.Now()
 	if err := writeFile(s.opts.StatePath, s.buf.Bytes()); err != nil {
-		return s.fail(fmt.Errorf("writing the state: %w", err))
+		return false, s.unsaved(fmt.Errorf("writing the state: %w", err))
 	}
 	written := time.Now()
 
 	took := written.Sub(start)
 	s.mu.Lock()
+	s.stats.savedAt = entries
 	s.stats.saves++
 	s.stats.saving += took
 	s.stats.slowest = max(s.stats.slowest, took)
@@ -233,7 +242,7 @@ func (s *Server) save(final bool) error {
 	s.report.printf("saved %d resources, %s, after %d entries, %d new (build %s, encode %s, write %s)",
 		resources, kilobytes(s.buf.Len()), entries, since,
 		seconds(built.Sub(start)), seconds(encoded.Sub(built)), seconds(written.Sub(encoded)))
-	return nil
+	return true, nil
 }
 
 // Close saves what is left and stops the backend. The update may have ended
@@ -247,6 +256,9 @@ func (s *Server) Close() {
 func (s *Server) close() {
 	if err := s.flush(); err != nil {
 		s.log.Error("saving the state on close", "err", err)
+		s.mu.Lock()
+		s.closeErr = err
+		s.mu.Unlock()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -273,6 +285,27 @@ func (s *Server) close() {
 	s.report.printf("%s: %s in %s, applied in %s, %d left the state as it was; %s in %s, slowest %s",
 		status, count(st.entries, "entry", "entries"), count(st.batches, "batch", "batches"), seconds(st.applying),
 		st.skipped, count(st.saves, "save", "saves"), seconds(st.saving), seconds(st.slowest))
+}
+
+// unsaved reports a save that could not be written, the disk full or the
+// folder not writable. Unlike a broken journal it is not final: the state is
+// still owed, so the next save, at the latest the one when the update ends,
+// tries again with everything applied by then.
+func (s *Server) unsaved(err error) error {
+	s.mu.Lock()
+	s.dirty = true
+	s.mu.Unlock()
+	s.log.Error("state not saved", "err", err)
+	s.report.printf("not saved, will try again: %v", err)
+	return err
+}
+
+// Err is why the final save failed, once the server is closed. The state file
+// then lags behind what Pulumi did, and is not the update's result.
+func (s *Server) Err() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closeErr
 }
 
 func (s *Server) fail(err error) error {

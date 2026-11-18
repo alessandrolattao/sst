@@ -8,6 +8,7 @@ import (
 	jsonv2 "encoding/json/v2"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strconv"
 	"strings"
@@ -222,8 +223,10 @@ func (s *Server) getStack(w http.ResponseWriter, r *http.Request) {
 		OrgName:     s.opts.Org,
 		ProjectName: s.opts.Project,
 		StackName:   tokens.QName(s.opts.Stack),
-		Tags:        s.tags,
-		Version:     s.version,
+		// A copy: the reply is encoded after the lock is released, and
+		// starting an update writes to the tags.
+		Tags:    maps.Clone(s.tags),
+		Version: s.version,
 	}
 	if s.latest != nil {
 		stack.ActiveUpdate = s.latest.id
@@ -395,15 +398,18 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, u *update) {
 		s.error(w, http.StatusConflict, reason)
 		return
 	}
-	u.status = req.Status
 	s.mu.Unlock()
-	s.log.Info("update completed", "update", u.id, "status", req.Status)
 	// The state is final: write it before Pulumi exits, since SST reads it as
-	// soon as Pulumi does.
+	// soon as Pulumi does. And before the update counts as completed, so a
+	// save that failed can be tried again by the CLI's retry of this call.
 	if err := s.flush(); err != nil {
 		s.error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.mu.Lock()
+	u.status = req.Status
+	s.mu.Unlock()
+	s.log.Info("update completed", "update", u.id, "status", req.Status)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -446,10 +452,17 @@ func (s *Server) journalEntries(w http.ResponseWriter, r *http.Request, u *updat
 			repeated++
 			continue
 		}
-		unchanged := s.elide.unchanged(entry)
-		if err = s.replayer.Add(entry); err == nil {
-			u.applied[entry.SequenceID] = struct{}{}
+		unchanged := false
+		err = guarded(func() error {
+			unchanged = s.elide.unchanged(entry)
+			if err := s.replayer.Add(entry); err != nil {
+				return err
+			}
 			s.elide.record(entry)
+			return nil
+		})
+		if err == nil {
+			u.applied[entry.SequenceID] = struct{}{}
 			if unchanged {
 				skipped++
 			} else {
@@ -692,4 +705,17 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	c.n += int64(n)
 	return n, err
+}
+
+// guarded runs a call into Pulumi's replayer, which assumes well-formed entries
+// and panics on some that are not. The panic comes back as an error, so the
+// update stops on it, instead of leaving s.mu locked under net/http's own
+// recover and every later call waiting on it.
+func guarded(call func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
+	return call()
 }

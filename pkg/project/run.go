@@ -741,6 +741,11 @@ loop:
 
 	if journaled != nil {
 		journaled.Close()
+		// The state file lags behind what Pulumi did: it is not the update's
+		// result, and pushing it would leave resources out of the state.
+		if err := journaled.Err(); err != nil {
+			return fmt.Errorf("the journaling backend could not save the state: %w", err)
+		}
 	}
 	log.Info("parsing state")
 	complete, err := getCompletedEvent(context.Background(), passphrase, workdir)
