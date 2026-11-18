@@ -744,7 +744,18 @@ loop:
 		// The state file lags behind what Pulumi did: it is not the update's
 		// result, and pushing it would leave resources out of the state.
 		if err := journaled.Err(); err != nil {
-			return fmt.Errorf("the journaling backend could not save the state: %w", err)
+			err = fmt.Errorf("the journaling backend could not save the state: %w", err)
+			// The journal runs on every command but diff, so the partial pushes
+			// are running: stopped, as below. The update is recorded as failed,
+			// as `sst unlock` records one.
+			partialCancel()
+			<-partialDone
+			update.TimeCompleted = time.Now().Format(time.RFC3339)
+			update.Errors = append(update.Errors, provider.SummaryError{Message: err.Error()})
+			if err := provider.PutUpdate(p.home, p.app.Name, p.app.Stage, update); err != nil {
+				log.Error("recording the update", "err", err)
+			}
+			return err
 		}
 	}
 	log.Info("parsing state")
