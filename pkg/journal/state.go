@@ -102,14 +102,25 @@ func (s *state) export() apitype.UntypedDeployment {
 	}
 }
 
+// snapshot is a deployment to save, with the schema version and the features
+// it was written for.
+type snapshot struct {
+	version  int
+	features []string
+	// deployment is the *apitype.DeploymentV3 the journal rebuilt, or a whole
+	// checkpoint's jsontext.Value, as Pulumi sent it.
+	deployment any
+	resources  int
+}
+
 // encode writes the checkpoint file for a deployment into buf: the stack and
 // the config as they were read, and the new deployment as `latest`.
-func (s *state) encode(buf *bytes.Buffer, deployment apitype.TypedDeployment) error {
+func (s *state) encode(buf *bytes.Buffer, deployment snapshot) error {
 	buf.Reset()
-	fmt.Fprintf(buf, `{"version":%d,`, deployment.Version)
-	if len(deployment.Features) > 0 {
+	fmt.Fprintf(buf, `{"version":%d,`, deployment.version)
+	if len(deployment.features) > 0 {
 		buf.WriteString(`"features":`)
-		if err := jsonv2.MarshalWrite(buf, deployment.Features, jsonOptions); err != nil {
+		if err := jsonv2.MarshalWrite(buf, deployment.features, jsonOptions); err != nil {
 			return err
 		}
 		buf.WriteByte(',')
@@ -121,7 +132,7 @@ func (s *state) encode(buf *bytes.Buffer, deployment apitype.TypedDeployment) er
 		buf.Write(s.body.Config)
 	}
 	buf.WriteString(`,"latest":`)
-	if err := jsonv2.MarshalWrite(buf, deployment.Deployment, jsonOptions); err != nil {
+	if err := jsonv2.MarshalWrite(buf, deployment.deployment, jsonOptions); err != nil {
 		return err
 	}
 	buf.WriteString("}}\n")

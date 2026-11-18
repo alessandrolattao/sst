@@ -67,7 +67,14 @@ type Server struct {
 	// save: only the final save writes them.
 	elided bool
 	elide  *elision
+	// whole is the last whole checkpoint, when Pulumi sends those instead of
+	// journal entries.
+	whole *snapshot
+	// failed is why the journal takes no more entries: one the replayer
+	// refused, or a state it could not rebuild.
 	failed error
+	// saveErr is why the last save failed, until one goes through.
+	saveErr error
 	// closeErr is the final save's error, for Err.
 	closeErr error
 	stats    stats
@@ -191,24 +198,19 @@ func (s *Server) save(final bool) (bool, error) {
 	s.saveMu.Lock()
 	defer s.saveMu.Unlock()
 
+	// A journal that broke still saves what it applied: Pulumi was told those
+	// steps are safe.
 	s.mu.Lock()
-	if s.failed != nil {
-		err := s.failed
-		s.mu.Unlock()
-		return false, err
-	}
-	if !s.dirty && !(final && s.elided) {
+	if !s.dirty && (!final || !s.elided) {
 		s.mu.Unlock()
 		return false, nil
 	}
 	entries, since := s.stats.entries, s.stats.entries-s.stats.savedAt
 	start := time.Now()
-	var deployment apitype.TypedDeployment
-	err := guarded(func() (err error) {
-		deployment, err = s.replayer.GenerateDeployment()
-		return err
-	})
-	s.dirty, s.elided = false, false
+	next, err := s.reached()
+	if err == nil {
+		s.dirty, s.elided = false, false
+	}
 	s.mu.Unlock()
 	if err != nil {
 		return false, s.fail(fmt.Errorf("rebuilding the state: %w", err))
@@ -216,9 +218,9 @@ func (s *Server) save(final bool) (bool, error) {
 	built := time.Now()
 
 	// Encoding happens outside the lock, so Pulumi's next entries are not held
-	// up by it. The deployment is a copy: the replayer changes its own
-	// resources, never the ones it handed out.
-	if err := s.state.encode(&s.buf, deployment); err != nil {
+	// up by it. The deployment shares slices and maps with the replayer, which
+	// only the batches journalEntries applies under saveMu rewrite in place.
+	if err := s.state.encode(&s.buf, next); err != nil {
 		return false, s.unsaved(fmt.Errorf("encoding the state: %w", err))
 	}
 	encoded := time.Now()
@@ -229,23 +231,64 @@ func (s *Server) save(final bool) (bool, error) {
 
 	took := written.Sub(start)
 	s.mu.Lock()
+	s.saveErr = nil
 	s.stats.savedAt = entries
 	s.stats.saves++
 	s.stats.saving += took
 	s.stats.slowest = max(s.stats.slowest, took)
 	s.mu.Unlock()
 
-	resources := len(deployment.Deployment.Resources)
 	s.log.Info("state saved",
-		"entries", entries, "new", since, "resources", resources, "bytes", s.buf.Len(),
+		"entries", entries, "new", since, "resources", next.resources, "bytes", s.buf.Len(),
 		"build", built.Sub(start), "encode", encoded.Sub(built), "write", written.Sub(encoded))
 	s.report.printf("saved %d resources, %s, after %d entries, %d new (build %s, encode %s, write %s)",
-		resources, kilobytes(s.buf.Len()), entries, since,
+		next.resources, kilobytes(s.buf.Len()), entries, since,
 		seconds(built.Sub(start)), seconds(encoded.Sub(built)), seconds(written.Sub(encoded)))
 	return true, nil
 }
 
-// Close saves what is left and stops the backend. The update may have ended
+// reached is the state the journal has reached. Callers hold s.mu.
+func (s *Server) reached() (snapshot, error) {
+	// A whole checkpoint is saved as Pulumi sent it: rebuilt by the replayer,
+	// it would keep only the pending creates of its base.
+	if s.whole != nil {
+		return *s.whole, nil
+	}
+	var deployment apitype.TypedDeployment
+	err := guarded(func() (err error) {
+		deployment, err = s.replayer.GenerateDeployment()
+		return err
+	})
+	if err != nil {
+		return snapshot{}, err
+	}
+	return snapshot{
+		version:    deployment.Version,
+		features:   deployment.Features,
+		deployment: deployment.Deployment,
+		resources:  len(deployment.Deployment.Resources),
+	}, nil
+}
+
+// saveOwed saves the state before a call is acknowledged, when the last save
+// failed: Pulumi must not take a step as safe while the state cannot record
+// it. It answers 500 itself when the save fails again, and the CLI retries
+// the call, which tries the save again.
+func (s *Server) saveOwed(w http.ResponseWriter) bool {
+	s.mu.Lock()
+	owed := s.saveErr != nil
+	s.mu.Unlock()
+	if !owed {
+		return true
+	}
+	if _, err := s.save(false); err != nil {
+		s.error(w, http.StatusInternalServerError, fmt.Sprintf("saving the state: %v", err))
+		return false
+	}
+	return true
+}
+
+// Close stops the backend and saves what is left. The update may have ended
 // without telling the backend, killed or crashed: the state still gets
 // everything the journal received. Only the first call does anything, and a
 // save that fails is reported like any other.
@@ -254,16 +297,17 @@ func (s *Server) Close() {
 }
 
 func (s *Server) close() {
+	// Stopped first, so no call is acknowledged after the last save.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.srv.Shutdown(ctx); err != nil {
+		s.log.Warn("stopping the backend", "err", err)
+	}
 	if err := s.flush(); err != nil {
 		s.log.Error("saving the state on close", "err", err)
 		s.mu.Lock()
 		s.closeErr = err
 		s.mu.Unlock()
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := s.srv.Shutdown(ctx); err != nil {
-		s.log.Warn("stopping the backend", "err", err)
 	}
 
 	s.mu.Lock()
@@ -288,12 +332,13 @@ func (s *Server) close() {
 }
 
 // unsaved reports a save that could not be written, the disk full or the
-// folder not writable. Unlike a broken journal it is not final: the state is
-// still owed, so the next save, at the latest the one when the update ends,
-// tries again with everything applied by then.
+// folder not writable. It is not final: the state is still owed, so the next
+// save tries again with everything applied by then, and until one goes
+// through no call is acknowledged without a save of its own (saveOwed).
 func (s *Server) unsaved(err error) error {
 	s.mu.Lock()
 	s.dirty = true
+	s.saveErr = err
 	s.mu.Unlock()
 	s.log.Error("state not saved", "err", err)
 	s.report.printf("not saved, will try again: %v", err)

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -517,8 +518,48 @@ func TestWholeCheckpoints(t *testing.T) {
 	expect(t, "checkpoint of a preview", code, http.StatusForbidden, body)
 }
 
+// A whole checkpoint, which Pulumi sends when it does not journal, is saved
+// as it was sent: with every pending operation, not only the creates.
+func TestACheckpointIsSavedAsSent(t *testing.T) {
+	s, statePath := startOn(t)
+	code, body := call(t, s, "POST", stackPath+"/update", user(s), program, false)
+	expect(t, "create", code, http.StatusOK, body)
+	var created apitype.UpdateProgramResponse
+	decodeInto(t, body, &created)
+	path := stackPath + "/update/" + created.UpdateID
+	code, body = call(t, s, "POST", path, user(s), apitype.StartUpdateRequest{JournalVersion: 0}, false)
+	expect(t, "start", code, http.StatusOK, body)
+	var started apitype.StartUpdateResponse
+	decodeInto(t, body, &started)
+
+	b := bucket(0)
+	deployment, err := json.Marshal(apitype.DeploymentV3{
+		Resources: []apitype.ResourceV3{{URN: stackURN, Type: "pulumi:pulumi:Stack"}, b},
+		PendingOperations: []apitype.OperationV2{
+			{Resource: b, Type: apitype.OperationTypeUpdating},
+			{Resource: bucket(1), Type: apitype.OperationTypeCreating},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, body = call(t, s, "PATCH", path+"/checkpoint", "update-token "+started.Token,
+		apitype.PatchUpdateCheckpointRequest{Version: 3, Deployment: deployment}, true)
+	expect(t, "checkpoint", code, http.StatusNoContent, body)
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	var types []apitype.OperationType
+	for _, op := range readLatest(t, statePath).Latest.PendingOperations {
+		types = append(types, op.Type)
+	}
+	if want := []apitype.OperationType{apitype.OperationTypeUpdating, apitype.OperationTypeCreating}; !slices.Equal(types, want) {
+		t.Errorf("pending operations in the file: %v, want %v", types, want)
+	}
+}
+
 // TestEntryItCannotApplyStopsTheUpdate: a step the state cannot record must
-// not be acknowledged, and nothing gets saved over the last good state.
+// not be acknowledged, and the file keeps the state it had.
 func TestEntryItCannotApplyStopsTheUpdate(t *testing.T) {
 	s, path := startOn(t)
 	before, err := os.ReadFile(path)
@@ -529,8 +570,8 @@ func TestEntryItCannotApplyStopsTheUpdate(t *testing.T) {
 	bad := apitype.JournalEntries{Entries: []apitype.JournalEntry{{Version: 99, Kind: apitype.JournalEntryKindBegin, SequenceID: 1}}}
 	code, body := call(t, s, "PATCH", update+"/journalentries", lease, bad, false)
 	expect(t, "an entry the replayer refuses", code, http.StatusInternalServerError, body)
-	if err := s.Save(); err == nil {
-		t.Fatal("saving after a refused entry succeeded")
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
 	}
 	after, err := os.ReadFile(path)
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -435,10 +436,10 @@ func (s *Server) journalEntries(w http.ResponseWriter, r *http.Request, u *updat
 	}
 	decoded := time.Now()
 
-	s.mu.Lock()
+	unlock := s.lock(entries)
 	if !u.inProgress(decoded) {
 		reason := u.conflict()
-		s.mu.Unlock()
+		unlock()
 		s.error(w, http.StatusConflict, reason)
 		return
 	}
@@ -471,15 +472,19 @@ func (s *Server) journalEntries(w http.ResponseWriter, r *http.Request, u *updat
 		}
 	}
 	applied := time.Now()
+	// What was applied is saved, the entries before one that broke the
+	// journal included. Entries that changed nothing do not make the state
+	// worth saving on their own: see elision.
+	if changed {
+		s.dirty = true
+	}
+	if skipped > 0 {
+		s.elided = true
+	}
+	if changed || skipped > 0 {
+		s.whole = nil
+	}
 	if err == nil {
-		// Entries that changed nothing are applied, but they do not make the
-		// state worth saving on their own: see elision.
-		if changed {
-			s.dirty = true
-		}
-		if skipped > 0 {
-			s.elided = true
-		}
 		s.stats.skipped += skipped
 		s.stats.batches++
 		s.stats.entries += len(entries) - repeated
@@ -487,7 +492,7 @@ func (s *Server) journalEntries(w http.ResponseWriter, r *http.Request, u *updat
 		s.stats.applying += applied.Sub(start)
 	}
 	total := s.stats.entries
-	s.mu.Unlock()
+	unlock()
 
 	if err != nil {
 		// Acknowledging the batch would tell Pulumi its steps are safe when the
@@ -496,9 +501,35 @@ func (s *Server) journalEntries(w http.ResponseWriter, r *http.Request, u *updat
 		s.error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if !s.saveOwed(w) {
+		return
+	}
 	s.log.Info("journal entries", "count", len(entries), "repeated", repeated, "total", total, "bytes", size,
 		"decode", decoded.Sub(start), "apply", applied.Sub(decoded))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// lock takes s.mu to apply a batch. RebuiltBaseState and StateMigration make
+// Pulumi's replayer rebuild the state, and NormalizeURNReferences then
+// rewrites in place the URN references (dependencies, snippets) that the
+// deployment of the last save shares with the replayer, while that save may
+// still be encoding it outside s.mu: a batch with one of them waits for the
+// save to end.
+func (s *Server) lock(entries []apitype.JournalEntry) (unlock func()) {
+	rebuilds := slices.ContainsFunc(entries, func(entry apitype.JournalEntry) bool {
+		return entry.Kind == apitype.JournalEntryKindRebuiltBaseState ||
+			entry.Kind == apitype.JournalEntryKindStateMigration
+	})
+	if !rebuilds {
+		s.mu.Lock()
+		return s.mu.Unlock
+	}
+	s.saveMu.Lock()
+	s.mu.Lock()
+	return func() {
+		s.mu.Unlock()
+		s.saveMu.Unlock()
+	}
 }
 
 func (s *Server) checkpoint(w http.ResponseWriter, r *http.Request, u *update) {
@@ -518,7 +549,7 @@ func (s *Server) checkpoint(w http.ResponseWriter, r *http.Request, u *update) {
 		s.error(w, http.StatusBadRequest, "request must contain a checkpoint")
 		return
 	}
-	s.replaceDeployment(w, u, req.Deployment, 0)
+	s.replaceDeployment(w, u, req.Version, req.Features, req.Deployment, 0)
 }
 
 func (s *Server) checkpointVerbatim(w http.ResponseWriter, r *http.Request, u *update) {
@@ -542,34 +573,46 @@ func (s *Server) checkpointVerbatim(w http.ResponseWriter, r *http.Request, u *u
 		s.error(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.replaceDeployment(w, u, untyped.Deployment, req.SequenceNumber)
+	s.replaceDeployment(w, u, untyped.Version, untyped.Features, untyped.Deployment, req.SequenceNumber)
 }
 
 // replaceDeployment makes a whole checkpoint the state, unless it is one the
 // backend already has: a verbatim checkpoint whose sequence number is not
-// past the last one taken, which is the CLI sending it again.
-func (s *Server) replaceDeployment(w http.ResponseWriter, u *update, raw []byte, sequence int) {
+// past the last one taken, which is the CLI sending it again. The file gets
+// it as it was sent, and the replayer starts from it, for any entry after it.
+func (s *Server) replaceDeployment(w http.ResponseWriter, u *update, version int, features []string,
+	raw []byte, sequence int,
+) {
 	deployment := &apitype.DeploymentV3{}
 	if err := jsonv2.Unmarshal(raw, deployment, jsonOptions); err != nil {
 		s.error(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !u.inProgress(time.Now()) {
-		s.error(w, http.StatusConflict, u.conflict())
+		reason := u.conflict()
+		s.mu.Unlock()
+		s.error(w, http.StatusConflict, reason)
 		return
 	}
-	if sequence > 0 {
-		if sequence <= u.verbatim {
-			w.WriteHeader(http.StatusNoContent)
-			return
+	if sequence <= 0 || sequence > u.verbatim {
+		if sequence > 0 {
+			u.verbatim = sequence
 		}
-		u.verbatim = sequence
+		s.whole = &snapshot{
+			version:    version,
+			features:   features,
+			deployment: jsontext.Value(raw),
+			resources:  len(deployment.Resources),
+		}
+		s.replayer = backend.NewJournalReplayer(deployment)
+		s.elide = newElision(deployment)
+		s.dirty = true
 	}
-	s.replayer = backend.NewJournalReplayer(deployment)
-	s.elide = newElision(deployment)
-	s.dirty = true
+	s.mu.Unlock()
+	if !s.saveOwed(w) {
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
