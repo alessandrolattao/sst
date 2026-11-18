@@ -250,7 +250,13 @@ func (s *Server) findUpdate(r *http.Request) *update {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	u := s.updates[r.PathValue("update")]
-	if u == nil || string(u.kind) != r.PathValue("kind") {
+	// Once an update exists, the CLI addresses it as an "update" whatever its
+	// kind (getUpdatePath in its httpstate client): a refresh, a destroy or a
+	// preview is created at its own kind and then started, renewed, journaled
+	// and completed under /update/. The kind it was created with is accepted
+	// too.
+	kind := r.PathValue("kind")
+	if u == nil || (kind != string(apitype.UpdateUpdate) && kind != string(u.kind)) {
 		return nil
 	}
 	return u

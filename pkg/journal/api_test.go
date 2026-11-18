@@ -111,7 +111,8 @@ func call(t *testing.T, s *Server, method, path, auth string, body any, gzipped 
 func user(s *Server) string { return "token " + s.token }
 
 // begin creates and starts an update of the given kind, as the CLI does, and
-// returns its path and the Authorization its own calls need.
+// returns its path and the Authorization its own calls need. Like the CLI, it
+// creates the update at its kind and addresses it as an "update" from then on.
 func begin(t *testing.T, s *Server, kind string) (string, string) {
 	t.Helper()
 	code, body := call(t, s, "POST", stackPath+"/"+kind, user(s), program, false)
@@ -120,7 +121,7 @@ func begin(t *testing.T, s *Server, kind string) (string, string) {
 	}
 	var created apitype.UpdateProgramResponse
 	decodeInto(t, body, &created)
-	path := stackPath + "/" + kind + "/" + created.UpdateID
+	path := stackPath + "/update/" + created.UpdateID
 	code, body = call(t, s, "POST", path, user(s), apitype.StartUpdateRequest{JournalVersion: 2}, false)
 	if code != http.StatusOK {
 		t.Fatalf("starting the update: %d %s", code, body)
