@@ -430,7 +430,9 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 	// The preview and the update each report an advisory policy
 	advisories := map[string]bool{}
 
-	partial := make(chan int, 1000)
+	// A request for a push, not a queue of them: a push reads the state as it
+	// is when it runs, so one pending covers every request made meanwhile.
+	partial := make(chan int, 1)
 	// Not ended by an interrupt: pushes go on while Pulumi winds down.
 	partialContext, partialCancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer partialCancel()
@@ -669,7 +671,12 @@ loop:
 		}
 
 		if input.Command != "diff" && (event.ResOutputsEvent != nil || event.CancelEvent != nil || event.SummaryEvent != nil) {
-			partial <- 1
+			// Never waiting on a push, so the events reach the UI as Pulumi
+			// writes them rather than one push at a time.
+			select {
+			case partial <- 1:
+			default:
+			}
 		}
 
 		for _, field := range getNotNilFields(event) {
