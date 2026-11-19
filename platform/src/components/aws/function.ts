@@ -1843,7 +1843,13 @@ export class Function extends Component implements Link.Linkable {
 
     const linkData = buildLinkData();
     const linkPermissions = buildLinkPermissions();
-    const { bundle, handler: handler0, sourcemaps } = buildHandler();
+    const {
+      bundle,
+      handler: handler0,
+      sourcemaps,
+      signature,
+      deployed,
+    } = buildHandler();
     const { handler, wrapper } = buildHandlerWrapper();
     const role = createRole();
     const imageAsset = createImageAsset();
@@ -1887,6 +1893,16 @@ export class Function extends Component implements Link.Linkable {
     });
 
     this.registerOutputs({
+      // The signature of the build the function runs and the zip it produced.
+      // Resolved from the function, so it is recorded only once the function
+      // runs that zip; the next deploy skips the build when it signs alike.
+      _code: unsecret(
+        all([signature, zipAsset, fn.arn]).apply(([signature, zipAsset]) =>
+          signature && zipAsset
+            ? { signature, key: zipAsset.key }
+            : undefined,
+        ),
+      ),
       _live: unsecret(
         output(dev).apply((dev) => {
           if (!dev) return undefined;
@@ -2174,7 +2190,17 @@ export class Function extends Component implements Link.Linkable {
               out: string;
               errors: string[];
               sourcemaps: string[];
-            }>("Runtime.Build", { ...input, isContainer });
+              signature?: string;
+              deployed?: string;
+            }>("Runtime.Build", {
+              ...input,
+              isContainer,
+              // Where the code is zipped. Naming it lets the build be skipped
+              // when it would produce the zip the function already runs; a
+              // postbuild hook changes the files after the build, so with one
+              // the build always runs.
+              code: args.hook?.postbuild ? undefined : codeZipPath(),
+            });
             if (result.errors.length > 0) {
               throw new Error(result.errors.join("\n"));
             }
@@ -2186,6 +2212,8 @@ export class Function extends Component implements Link.Linkable {
             handler: buildResult.handler,
             bundle: buildResult.out,
             sourcemaps: buildResult.sourcemaps,
+            signature: buildResult.signature,
+            deployed: buildResult.deployed,
           };
 
           function resolveDevBridge() {
@@ -2194,6 +2222,8 @@ export class Function extends Component implements Link.Linkable {
                 handler: "index.handler",
                 bundle: path.join($cli.paths.platform, "dist", "nodejs-bridge"),
                 sourcemaps: undefined,
+                signature: undefined,
+                deployed: undefined,
               };
             }
 
@@ -2201,10 +2231,16 @@ export class Function extends Component implements Link.Linkable {
               handler: "bootstrap",
               bundle: path.join($cli.paths.platform, "dist", "bridge"),
               sourcemaps: undefined,
+              signature: undefined,
+              deployed: undefined,
             };
           }
         },
       );
+    }
+
+    function codeZipPath() {
+      return path.resolve($cli.paths.work, "artifacts", name, "code.zip");
     }
 
     function buildHandlerWrapper() {
@@ -2523,10 +2559,13 @@ export class Function extends Component implements Link.Linkable {
         isContainer,
         logGroup.apply((l) => l?.arn),
         dev,
-        all([region, args.bundle]).apply(([regionName, customBundle]) => ({
-          regionName,
-          customBundle: !!customBundle,
-        })),
+        all([region, args.bundle, deployed]).apply(
+          ([regionName, customBundle, deployed]) => ({
+            regionName,
+            customBundle: !!customBundle,
+            deployed,
+          }),
+        ),
       ]).apply(
         async ([
           bundle,
@@ -2536,7 +2575,7 @@ export class Function extends Component implements Link.Linkable {
           isContainer,
           logGroupArn,
           dev,
-          { regionName, customBundle },
+          { regionName, customBundle, deployed },
         ]) => {
           if (isContainer) return;
 
@@ -2552,7 +2591,35 @@ export class Function extends Component implements Link.Linkable {
             return created;
           }
 
+          if (deployed) return keepCode(deployed);
+
           return createCode();
+
+          // The build was skipped: it would have produced the zip the function
+          // already runs, which is in the bucket under `key`. Pulumi still
+          // reads a file to register the object, so it gets an empty one where
+          // the zip would be, and `ignoreChanges` keeps the source the state
+          // has. The file is empty on purpose: the provider keeps a copy of
+          // every archive it is shown under its hash, and reuses a copy only
+          // when it is not empty, so this one can never be taken for the zip.
+          async function keepCode(key: string) {
+            const zipPath = codeZipPath();
+            await fs.promises.mkdir(path.dirname(zipPath), {
+              recursive: true,
+            });
+            await fs.promises.writeFile(zipPath, "");
+            return new s3.BucketObjectv2(
+              `${name}Code`,
+              {
+                key,
+                bucket: region.apply((region) =>
+                  bootstrap.forRegion(region).then((d) => d.asset),
+                ),
+                source: new asset.FileArchive(zipPath),
+              },
+              { parent, ignoreChanges: ["source"] },
+            );
+          }
 
           async function createCode() {
             const zipPath = path.resolve(

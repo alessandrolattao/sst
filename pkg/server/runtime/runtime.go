@@ -19,7 +19,7 @@ func (r *Runtime) Build(input *runtime.BuildInput, output *runtime.BuildOutput) 
 	if err != nil {
 		return err
 	}
-	if len(result.Errors) == 0 {
+	if len(result.Errors) == 0 && result.Deployed == "" {
 		bus.Publish(&runtime.BuildEvent{
 			FunctionID: input.FunctionID,
 			Handler:    input.Handler,

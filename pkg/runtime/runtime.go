@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/sst/sst/v3/pkg/project/path"
@@ -62,6 +63,9 @@ type BuildInput struct {
 		To   string `json:"to"`
 	} `json:"copyFiles"`
 	IsContainer bool `json:"isContainer,omitempty"`
+	// Code is where the caller zips the build. Set by a caller that can keep
+	// the deployed zip when the build would produce the same files.
+	Code string `json:"code,omitempty"`
 }
 
 func (input *BuildInput) Out() string {
@@ -81,6 +85,11 @@ type BuildOutput struct {
 	// once measures it from when its build starts, so the wait for a free slot
 	// isn't counted; for the others it's the whole build.
 	Duration time.Duration `json:"-"`
+	// Signature of the build, when the runtime can sign one.
+	Signature string `json:"signature,omitempty"`
+	// Deployed is the key of the zip the function already runs. Set when the
+	// build was skipped because it would produce that same zip.
+	Deployed string `json:"deployed,omitempty"`
 }
 
 // BuildEvent says a function was built for a deploy. In sst dev the function
@@ -105,6 +114,9 @@ type Collection struct {
 	runtimes []Runtime
 	cfgPath  string
 	targets  map[string]*BuildInput
+	// what the state says each function runs, see deployed.go
+	deployedMut sync.RWMutex
+	deployed    map[string]deployedCode
 }
 
 func NewCollection(platform string, runtimes ...Runtime) *Collection {
@@ -141,6 +153,11 @@ func (c *Collection) Build(ctx context.Context, input *BuildInput) (*BuildOutput
 		}
 	}
 
+	signature, signedHandler := c.sign(ctx, input)
+	if key := c.deployedKey(input, signature); key != "" {
+		return &BuildOutput{Out: out, Handler: signedHandler, Errors: []string{}, Sourcemaps: []string{}, Signature: signature, Deployed: key}, nil
+	}
+
 	if input.Bundle == "" {
 		// skip removing in dev mode so running workers don't lose their bundle files
 		if !input.Dev {
@@ -168,6 +185,7 @@ func (c *Collection) Build(ctx context.Context, input *BuildInput) (*BuildOutput
 	}
 
 	result.Out = out
+	result.Signature = signature
 	if result.Sourcemaps == nil {
 		result.Sourcemaps = []string{}
 	}

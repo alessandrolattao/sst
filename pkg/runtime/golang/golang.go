@@ -40,6 +40,9 @@ type Runtime struct {
 	// gomodcacheOverride is a test seam set at construction time and
 	// never mutated afterwards, so it can be read without the mutex.
 	gomodcacheOverride string
+	// signatures of the deploy builds, one batch per module, see signature.go
+	signedMut sync.Mutex
+	signed    map[string]*signedModule
 }
 
 // New returns a Runtime with empty per-function state.
@@ -139,12 +142,10 @@ func (r *Runtime) Build(ctx context.Context, input *runtime.BuildInput) (*runtim
 		// *installed* artifacts; these are built into a temp dir, zipped, and
 		// never consulted by `go` again. The on-disk build cache is keyed
 		// separately and is unaffected: compile steps still hit it.
-		args = append(args, "-ldflags", "-s -w -buildid=")
+		args = append(args, "-ldflags", deployLdflags)
 		// no revision or commit time in the binary, or every commit changes it
-		args = append(args, "-buildvcs=false")
-		env = append(env, "CGO_ENABLED=0")
-		env = append(env, "GOOS=linux")
-		env = append(env, "GOARCH="+goarchFromArchitecture(properties.Architecture))
+		args = append(args, deployBuildvcs)
+		env = deployEnv(env, properties.Architecture)
 	}
 	// "./" prefix forces relative path resolution; without it `go build`
 	// treats a sub-path like "commands/connect" as a stdlib package name.

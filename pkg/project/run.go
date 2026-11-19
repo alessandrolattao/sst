@@ -125,6 +125,9 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 		}
 	}
 
+	// before Pulumi starts rewriting the state file
+	p.Runtime.LoadDeployed(workdir.state())
+
 	completed, err := getCompletedEvent(ctx, passphrase, workdir)
 	if err != nil {
 		bus.Publish(&BuildFailedEvent{
