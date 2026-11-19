@@ -47,7 +47,7 @@ Everything SST does, it still does. The changes live mostly in the Go runtime, a
   |  Unchanged   1297 functions, signatures match the deployed ones
   ```
 
-  The log has one line per function, with the whole signatures. `SST_BUILD_SIGNATURES=true` prints one line per function in the deploy output too, the kept ones and the reason a build was not signed included, which is what to turn on in CI to see why a function was or was not built.
+  The log has one line per function, with the whole signatures and the reason a build was not signed. `SST_PRINT_LOGS=1` prints the log in the deploy output, which is what to turn on in CI to see why a function was or was not built.
 
 - **Deploys stop paying for dev-only work.** The import graph is only ever read by the dev file watcher, but it was captured after every build, roughly doubling the cost of every deploy build. It is now captured only in dev.
 

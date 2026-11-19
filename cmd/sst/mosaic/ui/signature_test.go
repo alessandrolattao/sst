@@ -15,10 +15,9 @@ const (
 
 func TestSignatureNote(t *testing.T) {
 	cases := []struct {
-		name    string
-		evt     runtime.BuildEvent
-		verbose bool
-		want    string
+		name string
+		evt  runtime.BuildEvent
+		want string
 	}{
 		{
 			name: "a build that replaces another shows both signatures",
@@ -45,22 +44,10 @@ func TestSignatureNote(t *testing.T) {
 			evt:  runtime.BuildEvent{Reason: "not signed: the runtime does not sign its builds"},
 			want: "",
 		},
-		{
-			name:    "an unsigned build says why when asked",
-			evt:     runtime.BuildEvent{Reason: "not signed: files are copied into the zip"},
-			verbose: true,
-			want:    ", not signed: files are copied into the zip",
-		},
-		{
-			name:    "a signed build reads the same when asked for more",
-			evt:     runtime.BuildEvent{Signature: testSignature, Replaces: testReplaced, Reason: "differs from the deployed one"},
-			verbose: true,
-			want:    " signature 9f41c0aa → 02d3ad85",
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := signatureNote(&tc.evt, tc.verbose); got != tc.want {
+			if got := signatureNote(&tc.evt); got != tc.want {
 				t.Errorf("signatureNote = %q, want %q", got, tc.want)
 			}
 		})

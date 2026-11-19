@@ -253,13 +253,10 @@ func (u *UI) Event(unknown interface{}) {
 		u.printEvent(TEXT_SUCCESS, "Build", withDuration(u.functionName(evt.FunctionID), evt.Duration))
 
 	case *runtime.BuildEvent:
-		u.printEvent(TEXT_SUCCESS, "Build", withDuration(strings.TrimPrefix(evt.Handler, "./"), evt.Duration)+signatureNote(evt, flag.SST_BUILD_SIGNATURES))
+		u.printEvent(TEXT_SUCCESS, "Build", withDuration(strings.TrimPrefix(evt.Handler, "./"), evt.Duration)+signatureNote(evt))
 
 	case *runtime.UnchangedEvent:
 		u.unchanged++
-		if flag.SST_BUILD_SIGNATURES {
-			u.printEvent(TEXT_SUCCESS, "Unchanged", strings.TrimPrefix(evt.Handler, "./")+" signature "+shortSignature(evt.Signature)+" equals the deployed one")
-		}
 
 	case *journal.ReportEvent:
 		u.printEvent(TEXT_SUCCESS, "Journal", evt.Message)

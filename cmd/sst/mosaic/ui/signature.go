@@ -16,13 +16,10 @@ func shortSignature(signature string) string {
 }
 
 // signatureNote says, after a build, what its signature is and why the
-// deployed zip was not kept. A build that could not be signed says so only
-// when asked to, since most runtimes never sign.
-func signatureNote(evt *runtime.BuildEvent, verbose bool) string {
+// deployed zip was not kept. A build that could not be signed says nothing
+// here, since most runtimes never sign: the log has the reason.
+func signatureNote(evt *runtime.BuildEvent) string {
 	if evt.Signature == "" {
-		if verbose && evt.Reason != "" {
-			return ", " + evt.Reason
-		}
 		return ""
 	}
 	if evt.Replaces != "" && evt.Replaces != evt.Signature {
