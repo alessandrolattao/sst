@@ -95,6 +95,7 @@ func CmdUI(c *cli.Cli) error {
 			project.BuildFailedEvent{},
 			project.SkipEvent{},
 			runtime.BuildEvent{},
+			runtime.UnchangedEvent{},
 			apitype.ResourcePreEvent{},
 			apitype.ResOpFailedEvent{},
 			apitype.ResOutputsEvent{},

@@ -45,6 +45,11 @@ var SST_DEV_HTTP_PUBLISH = isTrue("SST_DEV_HTTP_PUBLISH")
 var SST_NO_BUN = isTrue("NO_BUN") || isTrue("SST_NO_BUN")
 var SST_PULUMI_JOURNALING = isTrue("SST_PULUMI_JOURNALING")
 
+// SST_BUILD_SIGNATURES has a deploy print, for every function, the signature
+// of its build and why it was built or kept, instead of only counting the
+// functions that were kept.
+var SST_BUILD_SIGNATURES = isTrue("SST_BUILD_SIGNATURES")
+
 func isTrue(name string) bool {
 	val, ok := os.LookupEnv(name)
 	if !ok {

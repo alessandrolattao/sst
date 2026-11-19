@@ -19,11 +19,20 @@ func (r *Runtime) Build(input *runtime.BuildInput, output *runtime.BuildOutput) 
 	if err != nil {
 		return err
 	}
-	if len(result.Errors) == 0 && result.Deployed == "" {
+	if result.Deployed != "" {
+		bus.Publish(&runtime.UnchangedEvent{
+			FunctionID: input.FunctionID,
+			Handler:    input.Handler,
+			Signature:  result.Signature,
+		})
+	} else if len(result.Errors) == 0 {
 		bus.Publish(&runtime.BuildEvent{
 			FunctionID: input.FunctionID,
 			Handler:    input.Handler,
 			Duration:   result.Duration,
+			Signature:  result.Signature,
+			Replaces:   result.Replaces,
+			Reason:     result.Reason,
 		})
 	}
 	*output = *result

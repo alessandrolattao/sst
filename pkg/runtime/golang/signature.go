@@ -100,6 +100,14 @@ func (r *Runtime) Sign(ctx context.Context, input *runtime.BuildInput) (string, 
 	return module.byDir[dir], "bootstrap", nil
 }
 
+// ForgetSignatures drops what was signed, so the next deploy signs the
+// sources as they are then.
+func (r *Runtime) ForgetSignatures() {
+	r.signedMut.Lock()
+	r.signed = nil
+	r.signedMut.Unlock()
+}
+
 func realPath(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {

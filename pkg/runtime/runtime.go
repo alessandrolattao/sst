@@ -90,6 +90,11 @@ type BuildOutput struct {
 	// Deployed is the key of the zip the function already runs. Set when the
 	// build was skipped because it would produce that same zip.
 	Deployed string `json:"deployed,omitempty"`
+	// Replaces is the signature recorded at the last deploy, when this build
+	// ran because it signs differently.
+	Replaces string `json:"-"`
+	// Reason says why the build ran instead of keeping the deployed zip.
+	Reason string `json:"-"`
 }
 
 // BuildEvent says a function was built for a deploy. In sst dev the function
@@ -98,6 +103,19 @@ type BuildEvent struct {
 	FunctionID string
 	Handler    string
 	Duration   time.Duration
+	// Signature of the build and the one it replaces, when there are any,
+	// and why the deployed zip was not kept.
+	Signature string
+	Replaces  string
+	Reason    string
+}
+
+// UnchangedEvent says a function was not built for a deploy, because its
+// build signs like the one it already runs.
+type UnchangedEvent struct {
+	FunctionID string
+	Handler    string
+	Signature  string
 }
 
 type RunInput struct {
@@ -153,9 +171,9 @@ func (c *Collection) Build(ctx context.Context, input *BuildInput) (*BuildOutput
 		}
 	}
 
-	signature, signedHandler := c.sign(ctx, input)
-	if key := c.deployedKey(input, signature); key != "" {
-		return &BuildOutput{Out: out, Handler: signedHandler, Errors: []string{}, Sourcemaps: []string{}, Signature: signature, Deployed: key}, nil
+	signed := c.signAndDecide(ctx, input)
+	if signed.key != "" {
+		return &BuildOutput{Out: out, Handler: signed.handler, Errors: []string{}, Sourcemaps: []string{}, Signature: signed.signature, Deployed: signed.key}, nil
 	}
 
 	if input.Bundle == "" {
@@ -185,7 +203,9 @@ func (c *Collection) Build(ctx context.Context, input *BuildInput) (*BuildOutput
 	}
 
 	result.Out = out
-	result.Signature = signature
+	result.Signature = signed.signature
+	result.Replaces = signed.previous
+	result.Reason = signed.reason
 	if result.Sourcemaps == nil {
 		result.Sourcemaps = []string{}
 	}

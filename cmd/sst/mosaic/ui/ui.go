@@ -61,6 +61,9 @@ type UI struct {
 	hasHeader  bool
 	options    *Options
 	log        *os.File
+
+	// functions the deploy did not build, their signature being the deployed one
+	unchanged int
 }
 
 type Options struct {
@@ -250,7 +253,13 @@ func (u *UI) Event(unknown interface{}) {
 		u.printEvent(TEXT_SUCCESS, "Build", withDuration(u.functionName(evt.FunctionID), evt.Duration))
 
 	case *runtime.BuildEvent:
-		u.printEvent(TEXT_SUCCESS, "Build", withDuration(strings.TrimPrefix(evt.Handler, "./"), evt.Duration))
+		u.printEvent(TEXT_SUCCESS, "Build", withDuration(strings.TrimPrefix(evt.Handler, "./"), evt.Duration)+signatureNote(evt, flag.SST_BUILD_SIGNATURES))
+
+	case *runtime.UnchangedEvent:
+		u.unchanged++
+		if flag.SST_BUILD_SIGNATURES {
+			u.printEvent(TEXT_SUCCESS, "Unchanged", strings.TrimPrefix(evt.Handler, "./")+" signature "+shortSignature(evt.Signature)+" equals the deployed one")
+		}
 
 	case *journal.ReportEvent:
 		u.printEvent(TEXT_SUCCESS, "Journal", evt.Message)
@@ -448,6 +457,10 @@ func (u *UI) Event(unknown interface{}) {
 		u.complete = evt
 		if evt.Old {
 			break
+		}
+		if u.unchanged > 0 {
+			u.printEvent(TEXT_SUCCESS, "Unchanged", unchangedSummary(u.unchanged))
+			u.unchanged = 0
 		}
 
 		u.blank()

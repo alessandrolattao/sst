@@ -20,7 +20,10 @@ type signingRuntime struct {
 	signature string
 	signErr   error
 	builds    int
+	forgotten int
 }
+
+func (m *signingRuntime) ForgetSignatures() { m.forgotten++ }
 
 func (m *signingRuntime) Build(ctx context.Context, input *runtime.BuildInput) (*runtime.BuildOutput, error) {
 	m.builds++
@@ -449,5 +452,125 @@ func TestBuildKeepsDeployedCodeConcurrently(t *testing.T) {
 	}
 	for range 32 {
 		assert.Equal(t, testCodeKey, <-done)
+	}
+}
+
+// A process that deploys more than once starts each deploy by reading the
+// state, and that is when what was signed before has to be forgotten.
+func TestLoadDeployedForgetsWhatWasSigned(t *testing.T) {
+	f := newDeployedFixture(t)
+	rt := newSigning("go-signature")
+	other := &outputRuntime{mockRuntime{matchFn: func(r string) bool { return r == "node" }}}
+	collection := runtime.NewCollection(f.cfgPath, other, rt)
+	collection.LoadDeployed(writeState(t))
+	collection.LoadDeployed(filepath.Join(t.TempDir(), "gone.json"))
+	assert.Equal(t, 2, rt.forgotten)
+}
+
+// A build says why it ran, and which signature it replaces.
+func TestBuildSaysWhyItRan(t *testing.T) {
+	type setup struct {
+		f     *deployedFixture
+		rt    *signingRuntime
+		input *runtime.BuildInput
+		state []stateResource
+	}
+	cases := []struct {
+		name     string
+		edit     func(s *setup, signature string)
+		reason   string
+		replaces bool
+	}{
+		{
+			name:   "nothing deployed",
+			edit:   func(s *setup, signature string) { s.state = []stateResource{} },
+			reason: "nothing deployed with a signature yet",
+		},
+		{
+			name:     "another signature",
+			edit:     func(s *setup, signature string) { s.rt.signature = "another-go-signature" },
+			reason:   "differs from the deployed one",
+			replaces: true,
+		},
+		{
+			name: "a deploy that failed half way",
+			edit: func(s *setup, signature string) {
+				s.state[1] = codeResource("Fn", "assets/Fn-code-bbbb.zip", s.f.code)
+			},
+			reason:   "equals the deployed one, but its zip is not the one the signature was recorded with",
+			replaces: true,
+		},
+		{
+			name: "a checkout somewhere else",
+			edit: func(s *setup, signature string) {
+				s.state[1] = codeResource("Fn", testCodeKey, filepath.Join(s.f.t.TempDir(), "code.zip"))
+			},
+			reason:   "equals the deployed one, but its zip was read from another path",
+			replaces: true,
+		},
+		{
+			name:     "no code object",
+			edit:     func(s *setup, signature string) { s.state = s.state[:1] },
+			reason:   "equals the deployed one, but its code object is not in the state",
+			replaces: true,
+		},
+		{
+			name: "a name two functions share",
+			edit: func(s *setup, signature string) {
+				twin := functionResource("Fn", map[string]any{"signature": signature, "key": testCodeKey})
+				twin["urn"] = testStack + "sst:aws:Cron$sst:aws:Function::Fn"
+				s.state = append(s.state, twin)
+			},
+			reason:   "equals the deployed one, but another function has its name",
+			replaces: true,
+		},
+		{
+			name: "files copied into the zip",
+			edit: func(s *setup, signature string) {
+				from := filepath.Join(s.f.t.TempDir(), "extra.txt")
+				require.NoError(s.f.t, os.WriteFile(from, []byte("x"), 0o644))
+				s.input.CopyFiles = []struct {
+					From string `json:"from"`
+					To   string `json:"to"`
+				}{{From: from, To: "extra.txt"}}
+			},
+			reason: "not signed: files are copied into the zip",
+		},
+		{
+			name:   "a caller that cannot keep the zip",
+			edit:   func(s *setup, signature string) { s.input.Code = "" },
+			reason: "not signed: the caller cannot keep the deployed zip",
+		},
+		{
+			name:   "a runtime that fails to sign",
+			edit:   func(s *setup, signature string) { s.rt.signErr = errors.New("go list failed") },
+			reason: "not signed: the runtime could not sign it: go list failed",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDeployedFixture(t)
+			rt := newSigning("go-signature")
+			signature := f.signatureOf(f.input(), rt)
+			s := &setup{
+				f: f, rt: rt, input: f.input(),
+				state: []stateResource{
+					functionResource("Fn", map[string]any{"signature": signature, "key": testCodeKey}),
+					codeResource("Fn", testCodeKey, f.code),
+				},
+			}
+			tc.edit(s, signature)
+			collection := runtime.NewCollection(f.cfgPath, rt)
+			collection.LoadDeployed(writeState(t, s.state...))
+			out, err := collection.Build(context.Background(), s.input)
+			require.NoError(t, err)
+			assert.Empty(t, out.Deployed)
+			assert.Equal(t, tc.reason, out.Reason)
+			if tc.replaces {
+				assert.Equal(t, signature, out.Replaces)
+			} else {
+				assert.Empty(t, out.Replaces)
+			}
+		})
 	}
 }

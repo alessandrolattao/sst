@@ -538,16 +538,21 @@ func TestSign_ThroughTheRuntime(t *testing.T) {
 		t.Errorf("a dev build has a signature: %q", signature)
 	}
 
-	// one module is signed once per deploy: a later change is not seen by the
-	// same runtime, and is by the next one
+	// One module is signed once per deploy: the same deploy does not see a
+	// later change. The next deploy of the same process does.
 	mustWriteFile(t, filepath.Join(root, "shared/x/x.go"), "package x\n\nfunc Name() string { return \"x2\" }\n")
 	again, _, _ := r.Sign(context.Background(), input("handlers/a"))
 	if again != a {
-		t.Error("the same runtime signed the module twice")
+		t.Error("the same deploy signed the module twice")
+	}
+	r.ForgetSignatures()
+	next, _, _ := r.Sign(context.Background(), input("handlers/a"))
+	if next == "" || next == a {
+		t.Errorf("the next deploy signed with what the one before read: %q", next)
 	}
 	fresh, _, _ := New().Sign(context.Background(), input("handlers/a"))
-	if fresh == "" || fresh == a {
-		t.Errorf("a new runtime did not see the change: %q", fresh)
+	if fresh != next {
+		t.Errorf("a new runtime signs %q, the same one after forgetting %q", fresh, next)
 	}
 
 	// through a link to the module
@@ -860,4 +865,56 @@ func deployWithSplitState(t *testing.T, cfgPath, root string, properties []byte,
 		built[name] = out.Deployed == ""
 	}
 	return built
+}
+
+// sst dev deploys more than once in one process, and a function it builds for
+// real goes through the deploy path each time. A change made between two
+// deploys has to be built by the second, not signed with what the first read.
+func TestDeploy_SecondDeployOfTheSameProcessSeesTheChange(t *testing.T) {
+	root := newSignFixture(t)
+	t.Setenv("GOFLAGS", "-mod=mod -trimpath")
+	t.Setenv("GOWORK", "off")
+	t.Setenv("GOPROXY", "off")
+	cfgPath := filepath.Join(t.TempDir(), "sst.config.ts")
+	properties, _ := json.Marshal(Properties{Architecture: "arm64"})
+	zip := filepath.Join(filepath.Dir(cfgPath), ".sst", "artifacts", "FnA", "code.zip")
+	input := func() *runtime.BuildInput {
+		return &runtime.BuildInput{
+			CfgPath: cfgPath, FunctionID: "FnA", Runtime: "go",
+			Handler: filepath.Join(root, "handlers", "a"), Properties: properties, Code: zip,
+		}
+	}
+
+	// one collection, as one process has
+	collection := runtime.NewCollection(cfgPath, New())
+	collection.LoadDeployed(filepath.Join(t.TempDir(), "no-state-yet.json"))
+	first, err := collection.Build(context.Background(), input())
+	if err != nil || len(first.Errors) > 0 || first.Deployed != "" || first.Signature == "" {
+		t.Fatalf("first deploy: %+v, %v", first, err)
+	}
+	state := writeDeployedState(t, map[string][3]string{"FnA": {first.Signature, "assets/FnA-code-1.zip", zip}})
+
+	// second deploy, nothing changed: kept
+	collection.LoadDeployed(state)
+	second, err := collection.Build(context.Background(), input())
+	if err != nil || second.Deployed == "" {
+		t.Fatalf("second deploy built an unchanged function: %+v, %v", second, err)
+	}
+
+	// third deploy of the same process, after a change to a shared package
+	mustWriteFile(t, filepath.Join(root, "shared/x/x.go"), "package x\n\nfunc Name() string { return \"x2\" }\n")
+	collection.LoadDeployed(state)
+	third, err := collection.Build(context.Background(), input())
+	if err != nil || len(third.Errors) > 0 {
+		t.Fatalf("third deploy: %+v, %v", third, err)
+	}
+	if third.Deployed != "" {
+		t.Fatal("the change was not built: the function would keep running the old code")
+	}
+	if third.Signature == first.Signature {
+		t.Error("the third deploy signed with what the first one read")
+	}
+	if third.Replaces != first.Signature || third.Reason != "differs from the deployed one" {
+		t.Errorf("third deploy: replaces %q, reason %q", third.Replaces, third.Reason)
+	}
 }
