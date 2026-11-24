@@ -1,5 +1,6 @@
 import { describe, beforeAll, beforeEach, it, expect } from "vitest";
 import * as pulumi from "@pulumi/pulumi";
+import { acm } from "@pulumi/aws";
 
 // Suppress Pulumi "Trace events are unavailable" errors in test environment
 process.on("unhandledRejection", (err: any) => {
@@ -53,8 +54,20 @@ pulumi.runtime.setMocks(
   false,
 );
 
+// The URNs each resource depends on, as the engine gets them and saves them in
+// the state. The mocks don't pass them to `newResource`, so read them off the
+// requests the monitor gets.
+const dependencies = new Map<string, string[]>();
+const monitor = pulumi.runtime.getMonitor() as any;
+const registerResource = monitor.registerResource.bind(monitor);
+monitor.registerResource = (req: any, callback: any) => {
+  dependencies.set(req.getName(), req.getDependenciesList());
+  return registerResource(req, callback);
+};
+
 const AUTHORIZER_TYPE = "aws:apigatewayv2/authorizer:Authorizer";
 const ROUTE_TYPE = "aws:apigatewayv2/route:Route";
+const DOMAIN_NAME_TYPE = "aws:apigatewayv2/domainName:DomainName";
 const FUNCTION_ARN = "arn:aws:lambda:us-east-1:123456789012:function:fn";
 const jwt = {
   issuer: "https://accounts.google.com",
@@ -184,6 +197,53 @@ describe("ApiGatewayWebSocket auth", function () {
     expect(authorizers[0].inputs.jwtConfiguration).toEqual({
       audiences: ["client-id"],
       issuer: "https://accounts.google.com",
+    });
+  });
+});
+
+describe("ApiGatewayWebSocket domain", function () {
+  let ApiGatewayWebSocket: typeof import("./../../src/components/aws/apigateway-websocket").ApiGatewayWebSocket;
+
+  beforeAll(async function () {
+    ApiGatewayWebSocket = (
+      await import("./../../src/components/aws/apigateway-websocket")
+    ).ApiGatewayWebSocket;
+  });
+
+  beforeEach(function () {
+    createdResources = [];
+  });
+
+  // `sst remove` deletes in the order of the dependencies in the state. Without
+  // this one the certificate goes first, and ACM refuses to delete it while the
+  // domain name still uses it.
+  it("makes the domain name depend on its certificate", async () => {
+    const cert = new acm.Certificate("WsCert", {
+      domainName: "ws.example.com",
+      validationMethod: "DNS",
+    });
+    new ApiGatewayWebSocket("CertDomain", {
+      domain: { name: "ws.example.com", dns: false, cert: cert.arn },
+    });
+    await settle();
+
+    const certUrn = await (cert.urn as any).promise();
+    expect(dependencies.get("CertDomainDomainName")).toContain(certUrn);
+  });
+
+  it("keeps the domain name's configuration", async () => {
+    new ApiGatewayWebSocket("ConfigDomain", {
+      domain: { name: "ws.example.com", dns: false, cert: "arn:aws:acm:cert" },
+    });
+    await settle();
+
+    const domainNames = find(DOMAIN_NAME_TYPE, "ConfigDomain");
+    expect(domainNames).toHaveLength(1);
+    expect(domainNames[0].inputs.domainName).toBe("ws.example.com");
+    expect(domainNames[0].inputs.domainNameConfiguration).toEqual({
+      certificateArn: "arn:aws:acm:cert",
+      endpointType: "REGIONAL",
+      securityPolicy: "TLS_1_2",
     });
   });
 });

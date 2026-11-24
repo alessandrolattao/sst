@@ -530,7 +530,7 @@ export class ApiGatewayWebSocket extends Component implements Link.Linkable {
     function createDomainName() {
       if (!domain || !certificateArn) return;
 
-      return all([domain, certificateArn]).apply(([domain, certificateArn]) => {
+      return output(domain).apply((domain) => {
         return domain.nameId
           ? apigatewayv2.DomainName.get(
             `${name}DomainName`,
@@ -544,11 +544,13 @@ export class ApiGatewayWebSocket extends Component implements Link.Linkable {
               `${name}DomainName`,
               {
                 domainName: domain.name!,
-                domainNameConfiguration: {
-                  certificateArn: certificateArn!,
-                  endpointType: "REGIONAL",
-                  securityPolicy: "TLS_1_2",
-                },
+                domainNameConfiguration: certificateArn.apply(
+                  (certificateArn) => ({
+                    certificateArn: certificateArn!,
+                    endpointType: "REGIONAL",
+                    securityPolicy: "TLS_1_2",
+                  }),
+                ),
               },
               { parent },
             ),
